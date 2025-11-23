@@ -330,10 +330,17 @@ export class CustomLLMClient extends LLMClient {
                 if (!normalizedData.method) {
                   logger({
                     category: "custom-llm",
-                    message: `Warning: No method found in response, falling back to standard response`,
+                    message: `Warning: No method found in response, using safe defaults`,
                     level: 1,
                   });
-                  return formattedResponse as T;
+                  // Return safe default structure instead of raw formattedResponse
+                  return {
+                    elementId: normalizedData.elementId,
+                    description: normalizedData.description,
+                    method: null,
+                    arguments: [],
+                    _rawResponse: formattedResponse,
+                  } as any;
                 }
 
                 // Return normalized data at the top level for Stagehand compatibility
