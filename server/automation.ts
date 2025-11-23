@@ -36,6 +36,7 @@ export class AutomationExecutor {
       status,
       details,
     };
+
     this.logs.push(log);
 
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -59,7 +60,6 @@ export class AutomationExecutor {
       if (useCustomLLM) {
         const customApiEndpoint = process.env.CUSTOM_LLM_API_ENDPOINT;
         const customModelName = process.env.CUSTOM_LLM_MODEL_NAME || "gpt-4-1-2025-04-14-eastus-dz";
-
         if (!customApiEndpoint) throw new Error("CUSTOM_LLM_API_ENDPOINT required");
 
         const customClient = new CustomLLMClient({
@@ -107,6 +107,7 @@ export class AutomationExecutor {
       this.page = this.stagehand.context.pages()[0];
 
       this.log("Browser initialized and ready", "success");
+
     } catch (error: any) {
       this.log("Initialization failed", "error", { error: error.message });
       throw error;
@@ -121,6 +122,7 @@ export class AutomationExecutor {
 
       this.log(`Executing: ${prompt}`, "running");
 
+      // Handle URLs first
       const urlMatch = prompt.match(/(?:go to|open|navigate to|visit)[\s.]*(?:https?:\/\/)?([^\s,\-]+\.[^\s,\-]+)/i);
       if (urlMatch) {
         const url = urlMatch[1].startsWith("http") ? urlMatch[1] : `https://${urlMatch[1]}`;
@@ -142,9 +144,9 @@ export class AutomationExecutor {
 
           const stepResult: any = await this.stagehand.act(step);
 
-          if (!stepResult || !stepResult.target || !stepResult.target.elementId) {
-            const errorMsg = `Step ${i + 1} failed: No elementId found`;
-            this.log(errorMsg, "error", stepResult);
+          if (!stepResult || typeof stepResult !== "object" || !stepResult?.target?.elementId) {
+            const errorMsg = `Step ${i + 1} failed: Invalid result (missing elementId)`;
+            this.log(errorMsg, "error", { stepResult });
 
             return {
               success: false,
@@ -156,7 +158,7 @@ export class AutomationExecutor {
 
           results.push(stepResult);
           this.log(`Step ${i + 1} completed`, "success", { stepResult });
-          await new Promise(res => setTimeout(res, 500));
+          await new Promise(res => setTimeout(res, 400));
         }
 
         return {
@@ -167,10 +169,11 @@ export class AutomationExecutor {
         };
       }
 
+      // Single step mode
       const result: any = await this.stagehand.act(prompt);
 
-      if (!result || !result.target || !result.target.elementId) {
-        const err = "No matching element found or invalid action response";
+      if (!result || typeof result !== "object" || !result?.target?.elementId) {
+        const err = "No matching element found or invalid response";
         this.log(err, "error", { result });
 
         return {
@@ -203,13 +206,13 @@ export class AutomationExecutor {
   }
 
   private parseMultiStepPrompt(prompt: string): string[] {
-    let cleanPrompt = prompt.replace(/(?:go to|open|navigate to|visit)[\s.]*(?:https?:\/\/)?([^\s,\-]+\.[^\s,\-]+)\s*/i, '');
-
-    const keywords = ['search for','search','click on','click','press','tap','type','enter','select','choose','scroll','hover','wait for','submit','upload'];
+    const clean = prompt.replace(/(?:go to|open|navigate to|visit)[\s.]*(?:https?:\/\/)?([^\s,\-]+\.[^\s,\-]+)\s*/i, '');
+    const keywords = [
+      'search for','search','click on','click','press','tap','type',
+      'enter','select','choose','scroll','hover','wait for','submit','upload'
+    ];
     const pattern = new RegExp(`\\b(${keywords.join('|')})\\s`, 'gi');
-
-    const parts = cleanPrompt.split(pattern).filter(p => p.trim().length > 0);
-    return parts.map(p => p.trim());
+    return clean.split(pattern).map(p => p.trim()).filter(p => p.length > 0);
   }
 
   async cleanup(): Promise<void> {
