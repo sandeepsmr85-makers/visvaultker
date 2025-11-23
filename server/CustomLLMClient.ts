@@ -88,6 +88,15 @@ export class CustomLLMClient extends LLMClient {
       level: 1,
     });
 
+    // Log the expected response schema if provided
+    if (options?.response_model) {
+      logger({
+        category: "custom-llm",
+        message: `Expected Response Schema: ${JSON.stringify(options.response_model, null, 2)}`,
+        level: 1,
+      });
+    }
+
     // Fetch OAuth token if not yet fetched
     if (!this.oauthToken) {
       try {
@@ -249,7 +258,13 @@ export class CustomLLMClient extends LLMClient {
         if (options?.response_model) {
           logger({
             category: "custom-llm",
-            message: `Response model requested, parsing: ${messageContent}`,
+            message: `Response model requested. Schema: ${JSON.stringify(options.response_model, null, 2)}`,
+            level: 1,
+          });
+          
+          logger({
+            category: "custom-llm",
+            message: `LLM Response to parse: ${messageContent}`,
             level: 1,
           });
 
@@ -272,13 +287,19 @@ export class CustomLLMClient extends LLMClient {
               // Handle response with element object (e.g., { method: "click", element: { id: ["0-13"]}})
               if (
                 parsedData.elementId ||
-                (parsedData.element && parsedData.method)
+                (parsedData.element && parsedData.method) ||
+                (parsedData.element && parsedData.action)
               ) {
                 // Extract element ID from either 'id' or 'path' field - with safe access
-                const rawId =
-                  parsedData.elementId || 
-                  (parsedData.element && parsedData.element.id) || 
-                  "0-1";
+                let rawId;
+                if (parsedData.elementId) {
+                  rawId = parsedData.elementId;
+                } else if (parsedData.element && typeof parsedData.element === "object") {
+                  rawId = parsedData.element.id || parsedData.element.elementId || "0-1";
+                } else {
+                  rawId = "0-1";
+                }
+
                 const elementId =
                   typeof rawId === "string"
                     ? rawId.replace(/[\[\]\s'"]/g, "")
@@ -304,6 +325,16 @@ export class CustomLLMClient extends LLMClient {
                   )}`,
                   level: 1,
                 });
+
+                // Validate that we have a method before returning
+                if (!normalizedData.method) {
+                  logger({
+                    category: "custom-llm",
+                    message: `Warning: No method found in response, falling back to standard response`,
+                    level: 1,
+                  });
+                  return formattedResponse as T;
+                }
 
                 // Return normalized data at the top level for Stagehand compatibility
                 return normalizedData as any;
@@ -341,12 +372,19 @@ export class CustomLLMClient extends LLMClient {
                 });
 
                 if (extractedJson.element && extractedJson.action) {
-                  const rawExtractedId = extractedJson.element?.id || "0-1";
+                  let rawExtractedId;
+                  if (typeof extractedJson.element === "object" && extractedJson.element !== null) {
+                    rawExtractedId = extractedJson.element.id || extractedJson.element.elementId || "0-1";
+                  } else {
+                    rawExtractedId = "0-1";
+                  }
+                  
                   const elementId = typeof rawExtractedId === "string"
                     ? rawExtractedId.replace(/[\[\]\s'"]/g, "")
                     : Array.isArray(rawExtractedId)
                     ? rawExtractedId[0]?.replace(/[\[\]\s'"]/g, "") || "0-1"
                     : "0-1";
+                    
                   const normalizedData = {
                     elementId,
                     description: extractedJson.description || "",
