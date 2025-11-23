@@ -80,9 +80,12 @@ export class CustomLLMClient extends LLMClient {
 
     const makeRequest = () =>
       new Promise<any>(async (resolve, reject) => {
+        // Ensure messages is an array
+        const messageArray = Array.isArray(messages) ? messages : [];
+        
         const requestPayload = {
           model: this.actualModelName,
-          messages: messages.map((msg: any) => ({
+          messages: messageArray.map((msg: any) => ({
             role: msg.role,
             content:
               typeof msg.content === "string"
