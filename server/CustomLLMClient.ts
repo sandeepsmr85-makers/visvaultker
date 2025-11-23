@@ -462,7 +462,24 @@ export class CustomLLMClient extends LLMClient {
           }
         }
 
-        return formattedResponse as T;
+        // If no response_model was requested, return standard response
+        // Add safe default properties to prevent crashes if Stagehand tries to access elementId
+        logger({
+          category: "custom-llm",
+          message: `No response_model requested. Returning standard LLM response with safe defaults.`,
+          level: 1,
+        });
+        
+        // Add elementId property with safe default to prevent "Cannot read property" errors
+        const responseWithDefaults: any = formattedResponse;
+        const safeResponse = Object.assign({}, responseWithDefaults, {
+          elementId: responseWithDefaults.elementId || "0-1",
+          method: responseWithDefaults.method || null,
+          description: responseWithDefaults.description || "",
+          arguments: responseWithDefaults.arguments || [],
+        });
+        
+        return safeResponse as T;
       } catch (error: any) {
         if (error.message.includes("Unauthorized")) {
           retries--;
