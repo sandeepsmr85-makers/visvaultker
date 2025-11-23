@@ -1,4 +1,3 @@
-// server/custom/CustomLLMClient.ts
 import { spawn } from "child_process";
 import {
   LLMClient,
@@ -7,7 +6,11 @@ import {
   AvailableModel,
 } from "@browserbasehq/stagehand";
 import https from "https";
-import { URL } from "url";
+
+// Allow self-signed SSL certificates for local development
+if (process.env.NODE_ENV === "development") {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+}
 
 type ResponseModelSchema = any; // keep generic until you have a schema type
 
