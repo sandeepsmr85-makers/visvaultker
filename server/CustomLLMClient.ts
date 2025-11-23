@@ -341,11 +341,22 @@ export class CustomLLMClient extends LLMClient {
               }
             }
 
-            // Other structured responses, return data and usage
+            // Other structured responses - if we don't recognize the structure,
+            // return a safe default to prevent downstream errors
+            logger({
+              category: "custom-llm",
+              message: `Response doesn't match expected element/action structure. Returning safe default.`,
+              level: 1,
+            });
+            
+            // Return a safe default structure to prevent "Cannot read property 'elementId'" errors
             return {
-              ...formattedResponse,
-              parsedData,
-              usage: formattedResponse.usage,
+              elementId: "0-1",
+              description: "",
+              method: null,
+              arguments: [],
+              _rawResponse: formattedResponse,
+              _parsedData: parsedData,
             } as any;
           } catch (e) {
             logger({
@@ -408,10 +419,19 @@ export class CustomLLMClient extends LLMClient {
                   return normalizedData as any;
                 }
 
+                logger({
+                  category: "custom-llm",
+                  message: `Extracted JSON doesn't match expected structure. Returning safe default.`,
+                  level: 1,
+                });
+                
                 return {
-                  ...formattedResponse,
-                  extractedJson,
-                  usage: formattedResponse.usage,
+                  elementId: "0-1",
+                  description: "",
+                  method: null,
+                  arguments: [],
+                  _rawResponse: formattedResponse,
+                  _extractedJson: extractedJson,
                 } as any;
               } catch (e2) {
                 logger({
@@ -424,7 +444,21 @@ export class CustomLLMClient extends LLMClient {
               }
             }
 
-            return formattedResponse as T;
+            // Final fallback - return safe default structure
+            logger({
+              category: "custom-llm",
+              message: `No valid JSON found in response. Returning safe default structure.`,
+              level: 1,
+            });
+            
+            return {
+              elementId: "0-1",
+              description: "",
+              method: null,
+              arguments: [],
+              _rawResponse: formattedResponse,
+              _originalContent: messageContent,
+            } as any;
           }
         }
 
