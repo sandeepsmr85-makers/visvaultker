@@ -74,7 +74,8 @@ export default function Home() {
           // Update current execution with new log
           setCurrentExecution((prev) => {
             if (!prev) return prev;
-            const logs = [...(prev.logs || []), log];
+            const existingLogs = Array.isArray(prev.logs) ? prev.logs : [];
+            const logs = [...existingLogs, log];
             return { ...prev, logs };
           });
           break;
@@ -203,20 +204,20 @@ export default function Home() {
   };
 
   // Format history items for sidebar
-  const historyItems = automations.map((a) => ({
+  const historyItems = Array.isArray(automations) ? automations.map((a) => ({
     id: a.id,
     prompt: a.prompt,
     status: a.status,
     createdAt: a.createdAt.toString(),
-  }));
+  })) : [];
 
   // Format cache items for sidebar
-  const cacheItems = cache.map((c) => ({
+  const cacheItems = Array.isArray(cache) ? cache.map((c) => ({
     id: c.id,
     prompt: c.prompt,
     useCount: c.useCount || "0",
     lastUsed: c.lastUsed?.toString() || new Date().toISOString(),
-  }));
+  })) : [];
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
