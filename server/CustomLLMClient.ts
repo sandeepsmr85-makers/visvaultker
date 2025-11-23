@@ -47,6 +47,20 @@ export class CustomLLMClient extends LLMClient {
     params: CreateChatCompletionOptions
   ): Promise<T> {
     let retries = 3;
+    
+    // Log all incoming params for debugging
+    logger({
+      category: "custom-llm",
+      message: `createChatCompletion called with params: ${JSON.stringify({
+        keys: Object.keys(params),
+        hasMessages: 'messages' in params,
+        messagesType: typeof (params as any).messages,
+        messagesLength: Array.isArray((params as any).messages) ? (params as any).messages.length : 'not array',
+        fullParams: params
+      }, null, 2)}`,
+      level: 1,
+    });
+
     const { messages, temperature, maxTokens, response_model: options } = params as any;
     const maxRetries = 3;
 
@@ -54,7 +68,11 @@ export class CustomLLMClient extends LLMClient {
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       logger({
         category: "custom-llm",
-        message: `Invalid messages parameter: ${JSON.stringify({ messages, params: Object.keys(params) })}`,
+        message: `Invalid messages parameter: ${JSON.stringify({ 
+          messages, 
+          params: Object.keys(params),
+          fullParamsDebug: params 
+        }, null, 2)}`,
         level: 0,
       });
       throw new Error("Messages parameter must be a non-empty array");
