@@ -1,0 +1,4 @@
+{
+  "name": "Stagehand Controller UI",
+  "description": "A frontend interface for configuring and visualizing Stagehand v3 web automation agents using custom LLM clients."
+}
