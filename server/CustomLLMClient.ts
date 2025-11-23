@@ -48,20 +48,24 @@ export class CustomLLMClient extends LLMClient {
   ): Promise<T> {
     let retries = 3;
     
+    // Stagehand v3 may pass parameters in the options object
+    const actualParams = (params as any).options || params;
+    
     // Log all incoming params for debugging
     logger({
       category: "custom-llm",
       message: `createChatCompletion called with params: ${JSON.stringify({
-        keys: Object.keys(params),
-        hasMessages: 'messages' in params,
-        messagesType: typeof (params as any).messages,
-        messagesLength: Array.isArray((params as any).messages) ? (params as any).messages.length : 'not array',
-        fullParams: params
+        originalKeys: Object.keys(params),
+        hasOptions: 'options' in params,
+        actualParamsKeys: Object.keys(actualParams),
+        hasMessages: 'messages' in actualParams,
+        messagesType: typeof actualParams.messages,
+        messagesLength: Array.isArray(actualParams.messages) ? actualParams.messages.length : 'not array'
       }, null, 2)}`,
       level: 1,
     });
 
-    const { messages, temperature, maxTokens, response_model: options } = params as any;
+    const { messages, temperature, maxTokens, response_model: options } = actualParams as any;
     const maxRetries = 3;
 
     // Validate messages parameter
@@ -70,8 +74,8 @@ export class CustomLLMClient extends LLMClient {
         category: "custom-llm",
         message: `Invalid messages parameter: ${JSON.stringify({ 
           messages, 
-          params: Object.keys(params),
-          fullParamsDebug: params 
+          actualParamsKeys: Object.keys(actualParams),
+          originalParamsKeys: Object.keys(params)
         }, null, 2)}`,
         level: 0,
       });
