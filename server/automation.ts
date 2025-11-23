@@ -145,7 +145,8 @@ export class AutomationExecutor {
       this.log(`Executing: ${prompt}`, "running");
 
       // Extract URL from prompt if present and navigate first (official pattern)
-      const urlMatch = prompt.match(/(?:go to|open|navigate to|visit)\s+(?:https?:\/\/)?([^\s,]+\.[^\s,]+)/i);
+      // Handles: "open google.com", "open.google.com", "go to google.com", etc.
+      const urlMatch = prompt.match(/(?:go to|open|navigate to|visit)[\s.]*(?:https?:\/\/)?([^\s,\-]+\.[^\s,\-]+)/i);
       if (urlMatch) {
         const url = urlMatch[1].startsWith('http') ? urlMatch[1] : `https://${urlMatch[1]}`;
         this.log(`Navigating to ${url}`, "running");
@@ -294,7 +295,8 @@ export class AutomationExecutor {
 
   private parseMultiStepPrompt(prompt: string): string[] {
     // Remove the navigation part if present (already handled separately)
-    let cleanPrompt = prompt.replace(/(?:go to|open|navigate to|visit)\s+(?:https?:\/\/)?([^\s,]+\.[^\s,]+)\s*/i, '');
+    // Updated to match the same pattern as in execute() method
+    let cleanPrompt = prompt.replace(/(?:go to|open|navigate to|visit)[\s.]*(?:https?:\/\/)?([^\s,\-]+\.[^\s,\-]+)\s*/i, '');
     
     if (!cleanPrompt.trim()) {
       return [];
@@ -302,6 +304,7 @@ export class AutomationExecutor {
     
     // Split on action keywords while preserving the action in each step
     const actionKeywords = [
+      'search for', 'search',  // Added search keywords
       'click on', 'click', 'press', 'tap',
       'type', 'enter', 'fill', 'input',
       'select', 'choose',
