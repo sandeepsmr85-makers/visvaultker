@@ -4,8 +4,6 @@ import { CustomLLMClient } from "./CustomLLMClient";
 
 export type AutomationModel = "openai" | "anthropic" | "gemini" | "custom";
 
-// Note: In Stagehand v3, act/extract/observe are called on the Stagehand instance, not the Page
-
 interface AutomationLog {
   timestamp: number;
   action: string;
@@ -40,7 +38,6 @@ export class AutomationExecutor {
     };
     this.logs.push(log);
 
-    // Only send if WebSocket is connected
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       try {
         this.ws.send(JSON.stringify({
@@ -48,8 +45,7 @@ export class AutomationExecutor {
           data: { log },
         }));
       } catch (error) {
-        // Silently fail if WebSocket send fails (connection closed)
-        console.error("Failed to send log over WebSocket:", error);
+        console.error("Failed to send log:", error);
       }
     }
   }
@@ -58,22 +54,13 @@ export class AutomationExecutor {
     this.log("Initializing browser automation", "running");
 
     try {
-      // Check if using Custom LLM with OAuth
       const useCustomLLM = process.env.USE_CUSTOM_LLM === "true";
-      
+
       if (useCustomLLM) {
-        // OAuth-based Custom LLM Client
         const customApiEndpoint = process.env.CUSTOM_LLM_API_ENDPOINT;
         const customModelName = process.env.CUSTOM_LLM_MODEL_NAME || "gpt-4-1-2025-04-14-eastus-dz";
 
-        if (!customApiEndpoint) {
-          throw new Error("CUSTOM_LLM_API_ENDPOINT environment variable is required when USE_CUSTOM_LLM is true");
-        }
-
-        this.log("Initializing with OAuth-based Custom LLM Client", "running", { 
-          endpoint: customApiEndpoint,
-          model: customModelName 
-        });
+        if (!customApiEndpoint) throw new Error("CUSTOM_LLM_API_ENDPOINT required");
 
         const customClient = new CustomLLMClient({
           modelName: "gpt-4o",
@@ -89,19 +76,16 @@ export class AutomationExecutor {
           llmClient: customClient,
         });
 
-        this.log("Custom LLM Client created with OAuth authentication", "success");
+        this.log("Custom OAuth LLM client initialized", "success");
       } else {
-        // Standard API key-based authentication
         const apiKeys = {
           openai: process.env.OPENAI_API_KEY,
           anthropic: process.env.ANTHROPIC_API_KEY,
           gemini: process.env.GEMINI_API_KEY,
         };
 
-        const apiKey = apiKeys[model as keyof typeof apiKeys];
-        if (!apiKey) {
-          throw new Error(`API key not found for model: ${model}. Please set ${model.toUpperCase()}_API_KEY environment variable.`);
-        }
+        const apiKey = apiKeys[model];
+        if (!apiKey) throw new Error(`${model} API key missing`);
 
         const modelMap = {
           openai: "openai/gpt-4o-mini",
@@ -113,23 +97,18 @@ export class AutomationExecutor {
           env: "LOCAL",
           verbose: 1,
           cacheDir: "stagehand-cache",
-          model: modelMap[model as keyof typeof modelMap],
+          model: modelMap[model],
         });
 
-        this.log("Standard LLM initialized", "success", { model });
+        this.log("Standard API model initialized", "success", { model });
       }
 
       await this.stagehand.init();
-      
-      // Get the page from context (official Stagehand v3 pattern)
       this.page = this.stagehand.context.pages()[0];
 
-      this.log("Browser automation initialized with caching enabled", "success", { 
-        authMode: useCustomLLM ? "OAuth" : "API Key",
-        model: useCustomLLM ? process.env.CUSTOM_LLM_MODEL_NAME : model 
-      });
+      this.log("Browser initialized and ready", "success");
     } catch (error: any) {
-      this.log("Failed to initialize browser", "error", { error: error.message });
+      this.log("Initialization failed", "error", { error: error.message });
       throw error;
     }
   }
@@ -138,307 +117,105 @@ export class AutomationExecutor {
     const startTime = Date.now();
 
     try {
-      if (!this.stagehand || !this.page) {
-        throw new Error("Automation not initialized");
-      }
+      if (!this.stagehand || !this.page) throw new Error("Automation not initialized");
 
       this.log(`Executing: ${prompt}`, "running");
 
-      // Extract URL from prompt if present and navigate first (official pattern)
-      // Handles: "open google.com", "open.google.com", "go to google.com", etc.
       const urlMatch = prompt.match(/(?:go to|open|navigate to|visit)[\s.]*(?:https?:\/\/)?([^\s,\-]+\.[^\s,\-]+)/i);
       if (urlMatch) {
-        const url = urlMatch[1].startsWith('http') ? urlMatch[1] : `https://${urlMatch[1]}`;
+        const url = urlMatch[1].startsWith("http") ? urlMatch[1] : `https://${urlMatch[1]}`;
         this.log(`Navigating to ${url}`, "running");
-        await this.page.goto(url, { waitUntil: 'domcontentloaded' });
-        this.log("Navigation completed", "success");
+        await this.page.goto(url, { waitUntil: "domcontentloaded" });
+        this.log("Navigation done", "success");
       }
 
-      // Parse multi-step instructions by splitting on common action keywords
       const steps = this.parseMultiStepPrompt(prompt);
-      
+
       if (steps.length > 1) {
-        this.log(`Detected ${steps.length} steps to execute`, "running");
-        
-        const results = [];
+        this.log(`Detected ${steps.length} steps`, "running");
+
+        const results: any[] = [];
+
         for (let i = 0; i < steps.length; i++) {
           const step = steps[i];
-          this.log(`Step ${i + 1}/${steps.length}: ${step}`, "running");
-          
-          const stepResult = await this.stagehand.act(step);
-          results.push(stepResult);
-          
-          this.log(`Step ${i + 1} completed`, "success", { result: stepResult });
-          
-          // Add a small delay between steps to allow page updates
-          if (i < steps.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
+          this.log(`Executing step ${i + 1}: ${step}`, "running");
+
+          const stepResult: any = await this.stagehand.act(step);
+
+          if (!stepResult || !stepResult.target || !stepResult.target.elementId) {
+            const errorMsg = `Step ${i + 1} failed: No elementId found`;
+            this.log(errorMsg, "error", stepResult);
+
+            return {
+              success: false,
+              error: errorMsg,
+              logs: this.logs,
+              duration: `${((Date.now() - startTime) / 1000).toFixed(1)}s`,
+            };
           }
+
+          results.push(stepResult);
+          this.log(`Step ${i + 1} completed`, "success", { stepResult });
+          await new Promise(res => setTimeout(res, 500));
         }
-        
-        this.log("All steps completed successfully", "success");
-        
-        const duration = `${((Date.now() - startTime) / 1000).toFixed(1)}s`;
-        
+
         return {
           success: true,
           result: results[results.length - 1],
           logs: this.logs,
-          duration,
+          duration: `${((Date.now() - startTime) / 1000).toFixed(1)}s`,
         };
-      } else {
-        // Single step execution
-        this.log("Processing automation with AI", "running");
-        const result = await this.stagehand.act(prompt);
+      }
 
-        this.log("Automation completed successfully", "success", { result });
+      const result: any = await this.stagehand.act(prompt);
 
-        const duration = `${((Date.now() - startTime) / 1000).toFixed(1)}s`;
+      if (!result || !result.target || !result.target.elementId) {
+        const err = "No matching element found or invalid action response";
+        this.log(err, "error", { result });
 
         return {
-          success: true,
-          result,
+          success: false,
+          error: err,
           logs: this.logs,
-          duration,
+          duration: `${((Date.now() - startTime) / 1000).toFixed(1)}s`,
         };
       }
-    } catch (error: any) {
-      this.log("Automation failed", "error", { error: error.message });
 
-      const duration = `${((Date.now() - startTime) / 1000).toFixed(1)}s`;
-
-      return {
-        success: false,
-        error: error.message,
-        logs: this.logs,
-        duration,
-      };
-    }
-  }
-
-  async executeAgent(prompt: string, model: AutomationModel): Promise<AutomationResult> {
-    const startTime = Date.now();
-
-    try {
-      if (!this.stagehand || !this.page) {
-        throw new Error("Automation not initialized");
-      }
-
-      this.log(`Executing with Agent mode: ${prompt}`, "running");
-
-      // Extract URL from prompt if present and navigate first
-      const urlMatch = prompt.match(/(?:go to|open|navigate to|visit)\s+(?:https?:\/\/)?([^\s,]+\.[^\s,]+)/i);
-      if (urlMatch) {
-        const url = urlMatch[1].startsWith('http') ? urlMatch[1] : `https://${urlMatch[1]}`;
-        this.log(`Navigating to ${url}`, "running");
-        await this.page.goto(url, { waitUntil: 'domcontentloaded' });
-        this.log("Navigation completed", "success");
-      }
-
-      this.log("Creating autonomous agent", "running");
-      
-      // Check if using Custom LLM with OAuth
-      const useCustomLLM = process.env.USE_CUSTOM_LLM === "true";
-      
-      let agent;
-      if (useCustomLLM) {
-        // When using CustomLLMClient, don't specify model - it's already configured
-        this.log("Using OAuth-based agent", "running");
-        agent = this.stagehand.agent({
-          systemPrompt: "You are a helpful assistant that can control a web browser to automate tasks. Complete all steps in the user's instruction."
-        });
-      } else {
-        // Map model to agent model names for standard API key mode
-        const agentModel = model === "openai" 
-          ? "openai/gpt-4o-mini" 
-          : model === "anthropic" 
-          ? "anthropic/claude-3-5-sonnet-20241022" 
-          : model === "gemini"
-          ? "google/gemini-2.0-flash-exp"
-          : "openai/gpt-4o-mini"; // Default fallback
-
-        this.log("Using standard API key agent", "running", { model: agentModel });
-        agent = this.stagehand.agent({
-          model: agentModel,
-          systemPrompt: "You are a helpful assistant that can control a web browser to automate tasks. Complete all steps in the user's instruction."
-        });
-      }
-
-      this.log("Agent executing workflow", "running");
-      
-      // Execute the entire workflow with the agent
-      const result = await agent.execute(prompt);
-
-      this.log("Agent workflow completed successfully", "success", { result });
-
-      const duration = `${((Date.now() - startTime) / 1000).toFixed(1)}s`;
+      this.log("Execution completed successfully", "success", { result });
 
       return {
         success: true,
         result,
         logs: this.logs,
-        duration,
+        duration: `${((Date.now() - startTime) / 1000).toFixed(1)}s`,
       };
-    } catch (error: any) {
-      this.log("Agent execution failed", "error", { error: error.message });
 
-      const duration = `${((Date.now() - startTime) / 1000).toFixed(1)}s`;
+    } catch (error: any) {
+      this.log("Execution failed", "error", { error: error.message });
 
       return {
         success: false,
         error: error.message,
         logs: this.logs,
-        duration,
+        duration: `${((Date.now() - startTime) / 1000).toFixed(1)}s`,
       };
     }
   }
 
   private parseMultiStepPrompt(prompt: string): string[] {
-    // Remove the navigation part if present (already handled separately)
-    // Updated to match the same pattern as in execute() method
     let cleanPrompt = prompt.replace(/(?:go to|open|navigate to|visit)[\s.]*(?:https?:\/\/)?([^\s,\-]+\.[^\s,\-]+)\s*/i, '');
-    
-    if (!cleanPrompt.trim()) {
-      return [];
-    }
-    
-    // Split on action keywords while preserving the action in each step
-    const actionKeywords = [
-      'search for', 'search',  // Added search keywords
-      'click on', 'click', 'press', 'tap',
-      'type', 'enter', 'fill', 'input',
-      'select', 'choose',
-      'scroll to', 'scroll',
-      'hover over', 'hover',
-      'wait for',
-      'submit',
-      'upload'
-    ];
-    
-    // Create regex pattern to split on action keywords
-    const pattern = new RegExp(`\\b(${actionKeywords.join('|')})\\s`, 'gi');
-    
-    // Split the prompt, keeping the delimiters
-    const parts: string[] = [];
-    let lastIndex = 0;
-    let match;
-    
-    while ((match = pattern.exec(cleanPrompt)) !== null) {
-      if (match.index > lastIndex) {
-        const prevText = cleanPrompt.slice(lastIndex, match.index).trim();
-        if (prevText && parts.length > 0) {
-          parts[parts.length - 1] += ' ' + prevText;
-        }
-      }
-      
-      const restOfPrompt = cleanPrompt.slice(match.index);
-      const nextMatch = pattern.exec(cleanPrompt);
-      
-      if (nextMatch) {
-        pattern.lastIndex = match.index + 1;
-        parts.push(restOfPrompt.slice(0, nextMatch.index - match.index).trim());
-      } else {
-        parts.push(restOfPrompt.trim());
-        break;
-      }
-      
-      lastIndex = match.index;
-    }
-    
-    if (parts.length === 0 && cleanPrompt.trim()) {
-      parts.push(cleanPrompt.trim());
-    }
-    
-    return parts.filter(p => p.length > 0);
-  }
 
-  async extract(prompt: string, instruction: string, schema?: any): Promise<AutomationResult> {
-    const startTime = Date.now();
+    const keywords = ['search for','search','click on','click','press','tap','type','enter','select','choose','scroll','hover','wait for','submit','upload'];
+    const pattern = new RegExp(`\\b(${keywords.join('|')})\\s`, 'gi');
 
-    try {
-      if (!this.stagehand) {
-        throw new Error("Automation not initialized");
-      }
-
-      this.log(`Navigating and extracting: ${instruction}`, "running");
-
-      // First navigate or perform action if needed
-      if (prompt) {
-        await this.stagehand.act(prompt);
-        this.log("Navigation completed", "success");
-      }
-
-      // Extract data (v3 API: extract is called on stagehand with instruction and schema)
-      this.log("Extracting data", "running");
-      const result = await this.stagehand.extract(instruction, schema || { data: "string" });
-
-      this.log("Data extracted successfully", "success", { result });
-
-      const duration = `${((Date.now() - startTime) / 1000).toFixed(1)}s`;
-
-      return {
-        success: true,
-        result,
-        logs: this.logs,
-        duration,
-      };
-    } catch (error: any) {
-      this.log("Extraction failed", "error", { error: error.message });
-
-      const duration = `${((Date.now() - startTime) / 1000).toFixed(1)}s`;
-
-      return {
-        success: false,
-        error: error.message,
-        logs: this.logs,
-        duration,
-      };
-    }
-  }
-
-  async observe(instruction: string): Promise<AutomationResult> {
-    const startTime = Date.now();
-
-    try {
-      if (!this.stagehand) {
-        throw new Error("Automation not initialized");
-      }
-
-      this.log(`Observing: ${instruction}`, "running");
-
-      // v3 API: observe is called on stagehand with instruction
-      const result = await this.stagehand.observe(instruction);
-
-      this.log("Observation completed", "success", { result });
-
-      const duration = `${((Date.now() - startTime) / 1000).toFixed(1)}s`;
-
-      return {
-        success: true,
-        result,
-        logs: this.logs,
-        duration,
-      };
-    } catch (error: any) {
-      this.log("Observation failed", "error", { error: error.message });
-
-      const duration = `${((Date.now() - startTime) / 1000).toFixed(1)}s`;
-
-      return {
-        success: false,
-        error: error.message,
-        logs: this.logs,
-        duration,
-      };
-    }
+    const parts = cleanPrompt.split(pattern).filter(p => p.trim().length > 0);
+    return parts.map(p => p.trim());
   }
 
   async cleanup(): Promise<void> {
     try {
-      if (this.stagehand) {
-        await this.stagehand.close();
-        this.log("Browser closed", "success");
-      }
+      if (this.stagehand) await this.stagehand.close();
+      this.log("Browser closed", "success");
     } catch (error: any) {
       this.log("Cleanup failed", "error", { error: error.message });
     }
