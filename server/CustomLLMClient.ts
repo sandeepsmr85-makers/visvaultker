@@ -50,6 +50,22 @@ export class CustomLLMClient extends LLMClient {
     const { messages, temperature, maxTokens, response_model: options } = params as any;
     const maxRetries = 3;
 
+    // Validate messages parameter
+    if (!messages || !Array.isArray(messages) || messages.length === 0) {
+      logger({
+        category: "custom-llm",
+        message: `Invalid messages parameter: ${JSON.stringify({ messages, params: Object.keys(params) })}`,
+        level: 0,
+      });
+      throw new Error("Messages parameter must be a non-empty array");
+    }
+    
+    logger({
+      category: "custom-llm",
+      message: `Creating chat completion with ${messages.length} messages`,
+      level: 1,
+    });
+
     // Fetch OAuth token if not yet fetched
     if (!this.oauthToken) {
       try {
@@ -80,21 +96,32 @@ export class CustomLLMClient extends LLMClient {
 
     const makeRequest = () =>
       new Promise<any>(async (resolve, reject) => {
-        // Ensure messages is an array
-        const messageArray = Array.isArray(messages) ? messages : [];
-        
+        const formattedMessages = messages.map((msg: any) => ({
+          role: msg.role,
+          content:
+            typeof msg.content === "string"
+              ? msg.content
+              : JSON.stringify(msg.content),
+        }));
+
         const requestPayload = {
           model: this.actualModelName,
-          messages: messageArray.map((msg: any) => ({
-            role: msg.role,
-            content:
-              typeof msg.content === "string"
-                ? msg.content
-                : JSON.stringify(msg.content),
-          })),
+          messages: formattedMessages,
           temperature,
           max_tokens: maxTokens,
         };
+
+        logger({
+          category: "custom-llm",
+          message: `Request payload: ${JSON.stringify({
+            model: this.actualModelName,
+            messagesCount: formattedMessages.length,
+            firstMessage: formattedMessages[0],
+            temperature,
+            max_tokens: maxTokens,
+          }, null, 2)}`,
+          level: 1,
+        });
 
         const requestBody = JSON.stringify(requestPayload);
 
