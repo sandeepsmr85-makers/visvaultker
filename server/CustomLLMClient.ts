@@ -288,6 +288,7 @@ export class CustomLLMClient extends LLMClient {
 
                 const normalizedData = {
                   elementId,
+                  description: parsedData.description || "",
                   method: parsedData.action || parsedData.method,
                   arguments: parsedData.argument
                     ? [parsedData.argument]
@@ -304,11 +305,8 @@ export class CustomLLMClient extends LLMClient {
                   level: 1,
                 });
 
-                return {
-                  ...formattedResponse,
-                  normalizedData,
-                  usage: formattedResponse.usage,
-                } as any;
+                // Return normalized data at the top level for Stagehand compatibility
+                return normalizedData as any;
               }
             }
 
@@ -351,6 +349,7 @@ export class CustomLLMClient extends LLMClient {
                     : "0-1";
                   const normalizedData = {
                     elementId,
+                    description: extractedJson.description || "",
                     method: extractedJson.action,
                     arguments: extractedJson.argument
                       ? [extractedJson.argument]
@@ -367,11 +366,8 @@ export class CustomLLMClient extends LLMClient {
                     level: 1,
                   });
 
-                  return {
-                    ...formattedResponse,
-                    normalizedData,
-                    usage: formattedResponse.usage,
-                  } as any;
+                  // Return normalized data at the top level for Stagehand compatibility
+                  return normalizedData as any;
                 }
 
                 return {
