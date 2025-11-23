@@ -257,7 +257,14 @@ export class CustomLLMClient extends LLMClient {
             const parsedData = JSON.parse(messageContent);
             logger({
               category: "custom-llm",
-              message: `Parsed ${JSON.stringify(parsedData, null, 2)}`,
+              message: `Parsed data structure: ${JSON.stringify({
+                hasElementId: 'elementId' in parsedData,
+                hasElement: 'element' in parsedData,
+                hasMethod: 'method' in parsedData,
+                hasAction: 'action' in parsedData,
+                keys: Object.keys(parsedData),
+                parsedData: parsedData
+              }, null, 2)}`,
               level: 1,
             });
 
@@ -267,12 +274,16 @@ export class CustomLLMClient extends LLMClient {
                 parsedData.elementId ||
                 (parsedData.element && parsedData.method)
               ) {
-                // Extract element ID from either 'id' or 'path' field
+                // Extract element ID from either 'id' or 'path' field - with safe access
                 const rawId =
-                  parsedData.elementId || parsedData.element.id || "0-1";
+                  parsedData.elementId || 
+                  (parsedData.element && parsedData.element.id) || 
+                  "0-1";
                 const elementId =
                   typeof rawId === "string"
                     ? rawId.replace(/[\[\]\s'"]/g, "")
+                    : Array.isArray(rawId) 
+                    ? rawId[0]?.replace(/[\[\]\s'"]/g, "") || "0-1"
                     : String(rawId);
 
                 const normalizedData = {
@@ -332,10 +343,12 @@ export class CustomLLMClient extends LLMClient {
                 });
 
                 if (extractedJson.element && extractedJson.action) {
-                  const elementId = extractedJson.element.id?.replace(
-                    /[\[\]\s'"]/g,
-                    "0-1"
-                  );
+                  const rawExtractedId = extractedJson.element?.id || "0-1";
+                  const elementId = typeof rawExtractedId === "string"
+                    ? rawExtractedId.replace(/[\[\]\s'"]/g, "")
+                    : Array.isArray(rawExtractedId)
+                    ? rawExtractedId[0]?.replace(/[\[\]\s'"]/g, "") || "0-1"
+                    : "0-1";
                   const normalizedData = {
                     elementId,
                     method: extractedJson.action,
