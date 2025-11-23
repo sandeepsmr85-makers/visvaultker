@@ -1,3 +1,4 @@
+// server/custom/CustomLLMClient.ts
 import { spawn } from "child_process";
 import {
   LLMClient,
@@ -6,9 +7,12 @@ import {
   AvailableModel,
 } from "@browserbasehq/stagehand";
 import https from "https";
+import { URL } from "url";
+
+type ResponseModelSchema = any; // keep generic until you have a schema type
 
 // Logger function for CustomLLMClient
-function logger(options: { category: string; message: string; level: number }) {
+function logger(options: { category: string; message: string; level?: number }) {
   const prefix = `[${options.category}]`;
   if (options.level === 0) {
     console.error(prefix, options.message);
@@ -17,10 +21,31 @@ function logger(options: { category: string; message: string; level: number }) {
   }
 }
 
+function safeJSONParse(s: string) {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
+ * CustomLLMClient
+ *
+ * Replaces/extends the previous implementation with:
+ * - robust normalization for Stagehand v3 params (message vs messages)
+ * - HTTPS requests with timeouts
+ * - token refresh with retries and exponential backoff
+ * - guarded parsing and consistent output shape so downstream always gets elementId/method/arguments
+ */
 export class CustomLLMClient extends LLMClient {
   readonly type = "custom";
   private apiEndpoint: string;
-  private apiKey: string | null; // Optional if using OAuth token
+  private apiKey: string | null = null; // optional if using OAuth token
   private actualModelName: string;
   private oauthToken: string | null = null;
   private baseURL: string | null = null;
@@ -43,522 +68,354 @@ export class CustomLLMClient extends LLMClient {
     this.hasVision = false;
   }
 
+  /**
+   * createChatCompletion
+   *
+   * Returns:
+   * - If a response schema is requested (response_model / responseSchema exists), attempts to return a normalized action:
+   *   { elementId: string, method: string | null, arguments: any[], description?: string, _rawResponse?: LLMResponse }
+   * - Otherwise returns a canonical LLMResponse (typed), with safe defaults present if Stagehand expects elementId.
+   */
   async createChatCompletion<T = LLMResponse>(
     params: CreateChatCompletionOptions
   ): Promise<T> {
-    let retries = 3;
-    
-    // Stagehand v3 may pass parameters in the options object
-    const actualParams = (params as any).options || params;
-    
-    // Log all incoming params for debugging
-    logger({
-      category: "custom-llm",
-      message: `createChatCompletion called with params: ${JSON.stringify({
-        originalKeys: Object.keys(params),
-        hasOptions: 'options' in params,
-        actualParamsKeys: Object.keys(actualParams),
-        hasMessages: 'messages' in actualParams,
-        messagesType: typeof actualParams.messages,
-        messagesLength: Array.isArray(actualParams.messages) ? actualParams.messages.length : 'not array'
-      }, null, 2)}`,
-      level: 1,
-    });
+    const maxAttempts = 3;
+    const baseBackoffMs = 400;
 
-    const { messages, temperature, maxTokens, response_model: options } = actualParams as any;
-    const maxRetries = 3;
+    // Stagehand v3 sometimes passes parameters nested under .options
+    const stagehandParams: any = (params as any).options ?? params;
 
-    // Validate messages parameter
-    if (!messages || !Array.isArray(messages) || messages.length === 0) {
+    // Normalize messages: Stagehand may use 'message' (singular) or 'messages' (plural)
+    const rawMessages = stagehandParams.messages ?? stagehandParams.message;
+    if (!rawMessages || !Array.isArray(rawMessages) || rawMessages.length === 0) {
       logger({
         category: "custom-llm",
-        message: `Invalid messages parameter: ${JSON.stringify({ 
-          messages, 
-          actualParamsKeys: Object.keys(actualParams),
-          originalParamsKeys: Object.keys(params)
-        }, null, 2)}`,
+        message:
+          "Invalid messages parameter: expected non-empty array under 'messages' or 'message'.",
         level: 0,
       });
       throw new Error("Messages parameter must be a non-empty array");
     }
-    
-    logger({
-      category: "custom-llm",
-      message: `Creating chat completion with ${messages.length} messages`,
-      level: 1,
-    });
 
-    // Log the expected response schema if provided
-    if (options?.response_model) {
+    const messages = rawMessages;
+    const temperature = stagehandParams.temperature ?? 0.0;
+    const maxTokens =
+      stagehandParams.maxTokens ??
+      stagehandParams.max_tokens ??
+      stagehandParams.max_tokens ??
+      512;
+
+    // response schema (if caller expects structured output)
+    const responseSchema: ResponseModelSchema =
+      stagehandParams.response_model ?? stagehandParams.responseSchema ?? null;
+
+    // ensure oauth token exists (fetch if needed)
+    if (!this.oauthToken) {
       logger({
         category: "custom-llm",
-        message: `Expected Response Schema: ${JSON.stringify(options.response_model, null, 2)}`,
+        message: "No OAuth token found, fetching token...",
         level: 1,
       });
-    }
-
-    // Fetch OAuth token if not yet fetched
-    if (!this.oauthToken) {
-      try {
-        const tokenResponse = (await this.fetchOAuthConfig()) as {
-          access_token: string;
-          baseURL?: string;
-        };
-        this.oauthToken = tokenResponse.access_token;
-        if (tokenResponse.baseURL) {
-          this.baseURL = tokenResponse.baseURL;
-        }
-        logger({
-          category: "custom-llm",
-          message: "Fetched OAuth token",
-          level: 1,
-        });
-      } catch (err) {
-        logger({
-          category: "custom-llm",
-          message: `Failed to fetch OAuth token: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-          level: 0,
-        });
-        throw err;
+      const tokenResp = await this.fetchOAuthConfigWithRetries();
+      this.oauthToken = (tokenResp as any)?.access_token ?? null;
+      if ((tokenResp as any)?.baseURL) this.baseURL = (tokenResp as any).baseURL;
+      if (!this.oauthToken) {
+        throw new Error("Failed to obtain OAuth token");
       }
+      logger({ category: "custom-llm", message: "OAuth token fetched", level: 1 });
     }
 
-    const makeRequest = () =>
-      new Promise<any>(async (resolve, reject) => {
-        const formattedMessages = messages.map((msg: any) => ({
-          role: msg.role,
-          content:
-            typeof msg.content === "string"
-              ? msg.content
-              : JSON.stringify(msg.content),
-        }));
+    // format messages for the API
+    const formattedMessages = messages.map((m: any) => ({
+      role: m.role,
+      content: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
+    }));
 
-        const requestPayload = {
-          model: this.actualModelName,
-          messages: formattedMessages,
-          temperature,
-          max_tokens: maxTokens,
-        };
+    const payload = {
+      model: this.actualModelName,
+      messages: formattedMessages,
+      temperature,
+      max_tokens: maxTokens,
+    };
 
-        logger({
-          category: "custom-llm",
-          message: `Request payload: ${JSON.stringify({
-            model: this.actualModelName,
-            messagesCount: formattedMessages.length,
-            firstMessage: formattedMessages[0],
-            temperature,
-            max_tokens: maxTokens,
-          }, null, 2)}`,
-          level: 1,
-        });
+    const requestBody = JSON.stringify(payload);
 
-        const requestBody = JSON.stringify(requestPayload);
+    // Build endpoint explicitly and sanitize trailing slashes
+    const endpoint = this.baseURL
+      ? `${this.baseURL.replace(/\/+$/, "")}/chat/completions`
+      : this.apiEndpoint;
 
-        try {
-          // Use baseURL from OAuth config if available, otherwise use apiEndpoint
-          const endpoint = this.baseURL
-            ? `${this.baseURL}/chat/completions`
-            : this.apiEndpoint;
-          const url = new URL(endpoint);
+    const url = new URL(endpoint);
 
-          const reqOptions = {
-            hostname: url.hostname,
-            port: url.port || 443,
-            path: url.pathname + url.search,
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${this.oauthToken}`,
-              "Content-Length": Buffer.byteLength(requestBody),
-            },
-            rejectUnauthorized: false,
-          };
-
-          let responseData = "";
-          const req = https.request(reqOptions, (res) => {
-            res.on("data", (chunk) => {
-              responseData += chunk;
-            });
-
-            res.on("end", () => {
-              if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-                try {
-                  const data = JSON.parse(responseData);
-                  resolve(data);
-                } catch (e) {
-                  reject(new Error(`Failed to parse response: ${responseData}`));
-                }
-              } else if (res.statusCode === 401) {
-                // Token possibly expired, clear for refresh
-                this.oauthToken = null;
-                reject(
-                  new Error(
-                    `Unauthorized – token expired or invalid: ${responseData}`
-                  )
-                );
-              } else {
-                reject(
-                  new Error(
-                    `API request failed with status ${res.statusCode}: ${responseData}`
-                  )
-                );
-              }
-            });
-          });
-
-          req.on("error", (err) => reject(err));
-          req.write(requestBody);
-          req.end();
-        } catch (err) {
-          reject(err);
-        }
-      });
-
-    while (retries > 0) {
-      try {
-        const data = await makeRequest();
-
-        // Construct LLMResponse from API data
-        const messageContent =
-          data?.choices?.[0]?.message?.content || data.content || "";
-        const toolCalls =
-          Array.isArray(data?.choices?.[0]?.message?.tool_calls) &&
-          data.choices[0].message.tool_calls.length > 0
-            ? data.choices[0].message.tool_calls
-            : [];
-
-        const messageObj: any = {
-          role: "assistant",
-          content: messageContent,
-        };
-        if (toolCalls.length > 0) messageObj.tool_calls = toolCalls;
-
-        const formattedResponse: LLMResponse = {
-          id: "custom-6b", // Adjust these appropriately
-          object: "chat.completion",
-          created: Math.floor(Date.now() / 1000),
-          model: this.actualModelName,
-          choices: [
-            {
-              index: 0,
-              message: messageObj,
-              finish_reason: data?.choices?.[0]?.finish_reason || "stop",
-            },
-          ],
-          usage: {
-            prompt_tokens: data?.usage?.prompt_tokens || 0,
-            completion_tokens: data?.usage?.completion_tokens || 0,
-            total_tokens: data?.usage?.total_tokens || 0,
+    // Helper that performs a single HTTP request with timeout
+    const doRequestOnce = (token: string, timeoutMs = 20000) =>
+      new Promise<any>((resolve, reject) => {
+        const reqOptions: https.RequestOptions = {
+          hostname: url.hostname,
+          port: url.port ? Number(url.port) : 443,
+          path: url.pathname + url.search,
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+            "Content-Length": Buffer.byteLength(requestBody),
           },
         };
 
-        // Optional structured parsing if requested by options.response_model
-        if (options?.response_model) {
-          logger({
-            category: "custom-llm",
-            message: `Response model requested. Schema: ${JSON.stringify(options.response_model, null, 2)}`,
-            level: 1,
-          });
-          
-          logger({
-            category: "custom-llm",
-            message: `LLM Response to parse: ${messageContent}`,
-            level: 1,
-          });
-
-          try {
-            const parsedData = JSON.parse(messageContent);
-            logger({
-              category: "custom-llm",
-              message: `Parsed data structure: ${JSON.stringify({
-                hasElementId: 'elementId' in parsedData,
-                hasElement: 'element' in parsedData,
-                hasMethod: 'method' in parsedData,
-                hasAction: 'action' in parsedData,
-                keys: Object.keys(parsedData),
-                parsedData: parsedData
-              }, null, 2)}`,
-              level: 1,
-            });
-
-            if (parsedData && typeof parsedData === "object") {
-              // Handle response with element object (e.g., { method: "click", element: { id: ["0-13"]}})
-              if (
-                parsedData.elementId ||
-                (parsedData.element && parsedData.method) ||
-                (parsedData.element && parsedData.action)
-              ) {
-                // Extract element ID from either 'id' or 'path' field - with safe access
-                let rawId;
-                if (parsedData.elementId) {
-                  rawId = parsedData.elementId;
-                } else if (parsedData.element && typeof parsedData.element === "object") {
-                  rawId = parsedData.element.id || parsedData.element.elementId || "0-1";
-                } else {
-                  rawId = "0-1";
-                }
-
-                const elementId =
-                  typeof rawId === "string"
-                    ? rawId.replace(/[\[\]\s'"]/g, "")
-                    : Array.isArray(rawId) 
-                    ? rawId[0]?.replace(/[\[\]\s'"]/g, "") || "0-1"
-                    : String(rawId);
-
-                const normalizedData = {
-                  elementId,
-                  description: parsedData.description || "",
-                  method: parsedData.action || parsedData.method,
-                  arguments: parsedData.argument
-                    ? [parsedData.argument]
-                    : parsedData.arguments || [],
-                };
-
-                logger({
-                  category: "custom-llm",
-                  message: `Normalized data (element/action): ${JSON.stringify(
-                    normalizedData,
-                    null,
-                    2
-                  )}`,
-                  level: 1,
-                });
-
-                // Validate that we have a method before returning
-                if (!normalizedData.method) {
-                  logger({
-                    category: "custom-llm",
-                    message: `Warning: No method found in response, using safe defaults`,
-                    level: 1,
-                  });
-                  // Return safe default structure instead of raw formattedResponse
-                  return {
-                    elementId: normalizedData.elementId,
-                    description: normalizedData.description,
-                    method: null,
-                    arguments: [],
-                    _rawResponse: formattedResponse,
-                  } as any;
-                }
-
-                // Return normalized data at the top level for Stagehand compatibility
-                return normalizedData as any;
+        const req = https.request(reqOptions, (res) => {
+          let body = "";
+          res.on("data", (chunk) => (body += chunk.toString()));
+          res.on("end", () => {
+            const status = res.statusCode ?? 0;
+            if (status >= 200 && status < 300) {
+              const parsed = safeJSONParse(body);
+              if (parsed === null) {
+                return reject(new Error(`Invalid JSON response (truncated): ${body.slice(0, 300)}`));
               }
+              return resolve(parsed);
+            } else if (status === 401) {
+              return reject(new Error("Unauthorized"));
+            } else {
+              return reject(new Error(`HTTP ${status}: ${body.slice(0, 300)}`));
             }
+          });
+        });
 
-            // Other structured responses - if we don't recognize the structure,
-            // return a safe default to prevent downstream errors
-            logger({
-              category: "custom-llm",
-              message: `Response doesn't match expected element/action structure. Returning safe default.`,
-              level: 1,
-            });
-            
-            // Return a safe default structure to prevent "Cannot read property 'elementId'" errors
-            return {
-              elementId: "0-1",
-              description: "",
-              method: null,
-              arguments: [],
-              _rawResponse: formattedResponse,
-              _parsedData: parsedData,
-            } as any;
-          } catch (e) {
-            logger({
-              category: "custom-llm",
-              message: `Failed to parse JSON: ${
-                e instanceof Error ? e.message : String(e)
-              }`,
-              level: 1,
-            });
+        req.on("error", (err) => reject(err));
+        req.setTimeout(timeoutMs, () => {
+          req.destroy(new Error("Request timed out"));
+        });
+        req.write(requestBody);
+        req.end();
+      });
 
-            // Try JSON match
-            const jsonMatch = messageContent.match(/[\[{][\s\S]*[\]}]/);
-            if (jsonMatch) {
-              try {
-                const extractedJson = JSON.parse(jsonMatch[0]);
-                logger({
-                  category: "custom-llm",
-                  message: `Extracted JSON: ${JSON.stringify(
-                    extractedJson,
-                    null,
-                    2
-                  )}`,
-                  level: 1,
-                });
-
-                if (extractedJson.element && extractedJson.action) {
-                  let rawExtractedId;
-                  if (typeof extractedJson.element === "object" && extractedJson.element !== null) {
-                    rawExtractedId = extractedJson.element.id || extractedJson.element.elementId || "0-1";
-                  } else {
-                    rawExtractedId = "0-1";
-                  }
-                  
-                  const elementId = typeof rawExtractedId === "string"
-                    ? rawExtractedId.replace(/[\[\]\s'"]/g, "")
-                    : Array.isArray(rawExtractedId)
-                    ? rawExtractedId[0]?.replace(/[\[\]\s'"]/g, "") || "0-1"
-                    : "0-1";
-                    
-                  const normalizedData = {
-                    elementId,
-                    description: extractedJson.description || "",
-                    method: extractedJson.action,
-                    arguments: extractedJson.argument
-                      ? [extractedJson.argument]
-                      : extractedJson.arguments || [],
-                  };
-
-                  logger({
-                    category: "custom-llm",
-                    message: `Normalized data (extracted): ${JSON.stringify(
-                      normalizedData,
-                      null,
-                      2
-                    )}`,
-                    level: 1,
-                  });
-
-                  // Return normalized data at the top level for Stagehand compatibility
-                  return normalizedData as any;
-                }
-
-                logger({
-                  category: "custom-llm",
-                  message: `Extracted JSON doesn't match expected structure. Returning safe default.`,
-                  level: 1,
-                });
-                
-                return {
-                  elementId: "0-1",
-                  description: "",
-                  method: null,
-                  arguments: [],
-                  _rawResponse: formattedResponse,
-                  _extractedJson: extractedJson,
-                } as any;
-              } catch (e2) {
-                logger({
-                  category: "custom-llm",
-                  message: `Extraction also failed: ${
-                    e2 instanceof Error ? e2.message : String(e2)
-                  }`,
-                  level: 1,
-                });
-              }
-            }
-
-            // Final fallback - return safe default structure
-            logger({
-              category: "custom-llm",
-              message: `No valid JSON found in response. Returning safe default structure.`,
-              level: 1,
-            });
-            
-            return {
-              elementId: "0-1",
-              description: "",
-              method: null,
-              arguments: [],
-              _rawResponse: formattedResponse,
-              _originalContent: messageContent,
-            } as any;
-          }
-        }
-
-        // If no response_model was requested, return standard response
-        // Add safe default properties to prevent crashes if Stagehand tries to access elementId
+    // Retry loop with exponential backoff and token refresh on 401
+    let attempt = 0;
+    while (attempt < maxAttempts) {
+      attempt += 1;
+      try {
         logger({
           category: "custom-llm",
-          message: `No response_model requested. Returning standard LLM response with safe defaults.`,
+          message: `Request attempt ${attempt} to ${endpoint} (messages=${formattedMessages.length})`,
           level: 1,
         });
-        
-        // Add elementId property with safe default to prevent "Cannot read property" errors
-        const responseWithDefaults: any = formattedResponse;
-        const safeResponse = Object.assign({}, responseWithDefaults, {
-          elementId: responseWithDefaults.elementId || "0-1",
-          method: responseWithDefaults.method || null,
-          description: responseWithDefaults.description || "",
-          arguments: responseWithDefaults.arguments || [],
-        });
-        
-        return safeResponse as T;
-      } catch (error: any) {
-        if (error.message.includes("Unauthorized")) {
-          retries--;
-          if (retries === 0) throw error;
 
-          try {
-            const tokenResponse = (await this.fetchOAuthConfig()) as {
-              access_token: string;
-            };
-            this.oauthToken = tokenResponse.access_token;
-            logger({
-              category: "custom-llm",
-              message: "Refreshed OAuth token after unauthorized error",
-              level: 1,
-            });
-          } catch (tokenError) {
-            logger({
-              category: "custom-llm",
-              message: `Failed to refresh OAuth token: ${
-                tokenError instanceof Error
-                  ? tokenError.message
-                  : String(tokenError)
-              }`,
-              level: 0,
-            });
-            throw tokenError;
+        const data = await doRequestOnce(this.oauthToken as string, 20000);
+
+        // Defensive extraction of message text
+        const rawChoice = data?.choices?.[0] ?? null;
+        const messageContent =
+          rawChoice?.message?.content ?? rawChoice?.text ?? data?.content ?? "";
+
+        // If caller requested a structured response/schema, attempt to parse and normalize
+        if (responseSchema) {
+          // Try direct JSON parse first
+          const parsed = safeJSONParse(messageContent);
+          if (parsed && typeof parsed === "object") {
+            const normalized = this._normalizeActionObject(parsed, data);
+            return normalized as any as T;
           }
-        } else {
+
+          // Try to extract JSON substring and parse
+          const jsonMatch = messageContent.match(/[\[{][\s\S]*[\]}]/);
+          if (jsonMatch) {
+            const extracted = safeJSONParse(jsonMatch[0]);
+            if (extracted && typeof extracted === "object") {
+              const normalized = this._normalizeActionObject(extracted, data);
+              return normalized as any as T;
+            }
+          }
+
+          // Parsing failed — return safe default normalized action so Stagehand won't crash
           logger({
             category: "custom-llm",
-            message: `Error: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-            level: 0,
+            message: "Failed to parse structured response; returning safe default action",
+            level: 1,
           });
-          if (retries <= 0) throw error;
+
+          return {
+            elementId: "0-1",
+            method: null,
+            arguments: [],
+            description: "",
+            _rawResponse: this._buildLLMResponseFromRaw(data, messageContent),
+          } as any as T;
         }
+
+        // No structured response requested — return canonical LLMResponse with safe defaults
+        const llmResp = this._buildLLMResponseFromRaw(data, messageContent);
+        // Ensure safe top-level keys in case Stagehand expects elementId
+        (llmResp as any).elementId = (llmResp as any).elementId ?? "0-1";
+        (llmResp as any).method = (llmResp as any).method ?? null;
+        (llmResp as any).arguments = (llmResp as any).arguments ?? [];
+
+        return llmResp as any as T;
+      } catch (err: any) {
+        const msg = err?.message ?? String(err);
+        logger({
+          category: "custom-llm",
+          message: `Attempt ${attempt} failed: ${msg}`,
+          level: 0,
+        });
+
+        if (msg.includes("Unauthorized")) {
+          // Refresh token and retry immediately (if attempts remain)
+          logger({
+            category: "custom-llm",
+            message: "Unauthorized — refreshing token and retrying",
+            level: 1,
+          });
+          try {
+            const tokenResp = await this.fetchOAuthConfigWithRetries();
+            this.oauthToken = (tokenResp as any)?.access_token ?? null;
+            if (!this.oauthToken) throw new Error("Token refresh failed (no access_token)");
+            // continue to next attempt
+          } catch (tokenErr) {
+            logger({
+              category: "custom-llm",
+              message: `Token refresh failed: ${tokenErr instanceof Error ? tokenErr.message : tokenErr}`,
+              level: 0,
+            });
+            // don't swallow; either retry loop continues or throw if last attempt
+          }
+        }
+
+        if (attempt >= maxAttempts) {
+          throw new Error(`Max retries exceeded: ${msg}`);
+        }
+
+        // Backoff before retrying
+        const backoff = baseBackoffMs * 2 ** (attempt - 1);
+        await sleep(backoff);
       }
     }
 
-    throw new Error("Max retries exceeded");
+    throw new Error("createChatCompletion: exhausted retries (unexpected)");
   }
 
-  async fetchOAuthConfig(): Promise<unknown> {
+  /**
+   * Normalize a parsed LLM object into the expected action shape.
+   * Ensures elementId and method exist (or safe defaults).
+   */
+  private _normalizeActionObject(parsed: any, rawData: any) {
+    // extract element id from common places
+    let rawId: any =
+      parsed.elementId ??
+      parsed.element?.id ??
+      parsed.element?.elementId ??
+      parsed.target?.id ??
+      parsed.id ??
+      null;
+
+    if (!rawId && Array.isArray(parsed.ids) && parsed.ids.length) rawId = parsed.ids[0];
+
+    let elementId = "0-1";
+    if (rawId != null) {
+      if (Array.isArray(rawId)) elementId = String(rawId[0]);
+      else elementId = String(rawId);
+      elementId = elementId.replace(/[\[\]\s'"]/g, "") || "0-1";
+    }
+
+    const method = parsed.method ?? parsed.action ?? parsed.verb ?? null;
+    const args =
+      parsed.arguments ??
+      (parsed.argument ? (Array.isArray(parsed.argument) ? parsed.argument : [parsed.argument]) : []);
+
+    const normalized = {
+      elementId,
+      method: method ?? null,
+      arguments: Array.isArray(args) ? args : [args].filter(Boolean),
+      description: parsed.description ?? "",
+      _parsed: parsed,
+      _rawResponse: this._buildLLMResponseFromRaw(rawData, typeof rawData === "string" ? rawData : ""),
+    };
+
+    return normalized;
+  }
+
+  /**
+   * Build a canonical LLMResponse from the raw API response (defensive)
+   */
+  private _buildLLMResponseFromRaw(raw: any, messageContent: string) {
+    const rawChoice = raw?.choices?.[0] ?? null;
+    const extractedContent =
+      rawChoice?.message?.content ?? rawChoice?.text ?? messageContent ?? "";
+
+    const llmResp: any = {
+      id: raw?.id ?? `custom-${Date.now()}`,
+      object: raw?.object ?? "chat.completion",
+      created: raw?.created ?? Math.floor(Date.now() / 1000),
+      model: this.actualModelName,
+      choices: [
+        {
+          index: 0,
+          message: { role: "assistant", content: extractedContent },
+          finish_reason: rawChoice?.finish_reason ?? "stop",
+        },
+      ],
+      usage: raw?.usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    };
+    return llmResp as LLMResponse;
+  }
+
+  /**
+   * Fetch OAuth config with retries (uses Python script spawn fallback).
+   * Prefer replacing this with an HTTP token provider in production.
+   */
+  private async fetchOAuthConfigWithRetries(retries = 3): Promise<any> {
+    for (let i = 0; i < retries; i++) {
+      try {
+        const res = await this._spawnPythonFetchToken(10000);
+        if (res && res.access_token) return res;
+        throw new Error("No access_token in token response");
+      } catch (err: any) {
+        logger({
+          category: "custom-llm",
+          message: `fetchOAuth attempt ${i + 1} failed: ${err instanceof Error ? err.message : String(err)}`,
+          level: 1,
+        });
+        if (i === retries - 1) throw err;
+        await sleep(500 * (i + 1));
+      }
+    }
+    throw new Error("fetchOAuthConfigWithRetries exhausted");
+  }
+
+  /**
+   * Spawn a Python process to fetch token (safe: timeout + parsing)
+   * Expects the Python script to write valid JSON to stdout on success.
+   */
+  private _spawnPythonFetchToken(timeoutMs = 10000): Promise<any> {
     return new Promise((resolve, reject) => {
-      const pythonProcess = spawn("python", ["fetch_token.py"]);
-      let output = "";
-      let errorOutput = "";
-
-      pythonProcess.stdout.on("data", (data) => {
-        output += data.toString();
+      const pythonExe = "python"; // modify if you need "python3" in some envs
+      const proc = spawn(pythonExe, ["fetch_token.py"], {
+        stdio: ["ignore", "pipe", "pipe"],
       });
 
-      pythonProcess.stderr.on("data", (data) => {
-        errorOutput += data.toString();
-      });
+      let out = "";
+      let errOut = "";
 
-      pythonProcess.on("close", (code) => {
+      const killTimer = setTimeout(() => {
+        proc.kill("SIGKILL");
+        reject(new Error("Token fetch timed out"));
+      }, timeoutMs);
+
+      proc.stdout.on("data", (b) => (out += b.toString()));
+      proc.stderr.on("data", (b) => (errOut += b.toString()));
+
+      proc.on("close", (code) => {
+        clearTimeout(killTimer);
         if (code !== 0) {
-          reject(new Error(`Python script failed: ${errorOutput}`));
-        } else {
-          try {
-            const result = JSON.parse(output.trim());
-            if (result.error) {
-              reject(new Error(`OAuth error: ${result.error}`));
-            } else {
-              resolve(result);
-            }
-          } catch (e) {
-            reject(new Error(`Failed to parse OAuth response: ${output}`));
-          }
+          return reject(new Error(`Token script failed (${code}): ${errOut.slice(0, 300)}`));
         }
+        const parsed = safeJSONParse(out.trim());
+        if (!parsed) return reject(new Error(`Failed to parse token JSON: ${out.slice(0, 300)}`));
+        return resolve(parsed);
+      });
+
+      proc.on("error", (e) => {
+        clearTimeout(killTimer);
+        reject(e);
       });
     });
   }
