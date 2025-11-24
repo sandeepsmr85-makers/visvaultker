@@ -1,0 +1,188 @@
+import 'dotenv/config'; // Load environment variables (including OAuth config)
+import { Stagehand, LLMClient, CreateChatCompletionOptions, LLMResponse } from "@browserbasehq/stagehand";
+import https from "https";
+import { spawn } from "child_process";
+
+// Your Custom LLM Client using OAuth
+class CustomLLMClient extends LLMClient {
+  readonly type = "custom";
+  private apiEndpoint: string;
+  private apiKey: string | null;
+  private actualModelName: string;
+  private oauthToken: string | null = null;
+  private baseURL: string | null = null;
+
+  constructor({
+    modelName = "gpt-4o-mini",
+    apiEndpoint,
+    apiKey = null,
+    actualModelName = "gpt-4o-mini"
+  }: {
+    modelName?: string;
+    apiEndpoint: string;
+    apiKey?: string | null;
+    actualModelName?: string;
+  }) {
+    super(modelName);
+    this.apiEndpoint = apiEndpoint;
+    this.apiKey = apiKey;
+    this.actualModelName = actualModelName;
+  }
+
+  // Fetch OAuth token by running an external script or other mechanism
+  async fetchOAuthConfig(): Promise<{ access_token: string; baseURL?: string; }> {
+    return new Promise((resolve, reject) => {
+      const pythonProcess = spawn("python", ["fetch_token.py"]);
+      let output = "";
+      let errorOutput = "";
+
+      pythonProcess.stdout.on("data", (data) => {
+        output += data.toString();
+      });
+      pythonProcess.stderr.on("data", (data) => {
+        errorOutput += data.toString();
+      });
+      pythonProcess.on("close", (code) => {
+        if (code !== 0) {
+          reject(new Error(`Python script failed: ${errorOutput}`));
+        } else {
+          try {
+            const result = JSON.parse(output.trim());
+            if (result.error) {
+              reject(new Error(`OAuth error: ${result.error}`));
+            } else {
+              resolve(result);
+            }
+          } catch (e) {
+            reject(new Error(`Failed to parse OAuth response: ${output}`));
+          }
+        }
+      });
+    });
+  }
+
+  async createChatCompletion(
+    params: CreateChatCompletionOptions
+  ): Promise<LLMResponse> {
+    let retries = 3;
+    const { messages, temperature, maxTokens } = params;
+
+    while (retries > 0) {
+      if (!this.oauthToken) {
+        const tokenResponse = await this.fetchOAuthConfig();
+        this.oauthToken = tokenResponse.access_token;
+        if (tokenResponse.baseURL) this.baseURL = tokenResponse.baseURL;
+      }
+
+      try {
+        const requestPayload = {
+          model: this.actualModelName,
+          messages: messages.map((msg) => ({
+            role: msg.role,
+            content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
+          })),
+          temperature,
+          max_tokens: maxTokens,
+        };
+        const requestBody = JSON.stringify(requestPayload);
+        const endpoint = this.baseURL ? `${this.baseURL}/chat/completions` : this.apiEndpoint;
+        const url = new URL(endpoint);
+
+        const reqOptions = {
+          hostname: url.hostname,
+          port: url.port || 443,
+          path: url.pathname + url.search,
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${this.oauthToken}`,
+            "Content-Length": Buffer.byteLength(requestBody),
+          },
+          rejectUnauthorized: false,
+        };
+
+        const data = await new Promise<any>((resolve, reject) => {
+          const req = https.request(reqOptions, (res) => {
+            let responseData = "";
+            res.on("data", (chunk) => { responseData += chunk; });
+            res.on("end", () => {
+              if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+                try {
+                  resolve(JSON.parse(responseData));
+                } catch {
+                  reject(new Error(`Failed to parse response: ${responseData}`));
+                }
+              } else if (res.statusCode === 401) {
+                this.oauthToken = null; // Token expired, clear to refresh
+                reject(new Error("Unauthorized – token expired"));
+              } else {
+                reject(new Error(`API request failed ${res.statusCode}: ${responseData}`));
+              }
+            });
+          });
+          req.on("error", reject);
+          req.write(requestBody);
+          req.end();
+        });
+
+        // Format response as LLMResponse
+        const messageContent = data?.choices?.[0]?.message?.content || "";
+        const formattedResponse = {
+          id: "custom",
+          object: "chat.completion",
+          created: Math.floor(Date.now() / 1000),
+          model: this.actualModelName,
+          choices: [
+            {
+              index: 0,
+              message: { role: "assistant", content: messageContent },
+              finish_reason: data?.choices?.[0]?.finish_reason || "stop",
+            },
+          ],
+          usage: data?.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        } as LLMResponse;
+
+        return formattedResponse;
+      } catch (error: any) {
+        if (error.message.includes("Unauthorized")) {
+          retries--;
+          if (retries === 0) throw error;
+        } else {
+          retries--;
+          if (retries === 0) throw error;
+        }
+      }
+    }
+
+    throw new Error("Failed to complete chat after retries");
+  }
+}
+
+async function main() {
+  const customClient = new CustomLLMClient({
+    apiEndpoint: process.env.OAUTH_API_ENDPOINT || "https://your-oauth-api.com/v1",
+    actualModelName: "gpt-4o-mini",
+  });
+
+  const stagehand = new Stagehand({
+    env: "LOCAL",
+    verbose: 2,
+    llmClient: customClient,
+  });
+
+  try {
+    await stagehand.init();
+
+    const page = stagehand.context.pages()[0];
+
+    await page.goto("https://www.linkedin.com");
+    await stagehand.act("Click 'Join now' button on linkedin.com");
+    await stagehand.act("Click 'Continue with Google' button");
+  } catch (error) {
+    console.error("Stagehand error:", error);
+  } finally {
+    await stagehand.close();
+  }
+}
+
+main();
