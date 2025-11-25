@@ -1,0 +1,69 @@
+// 1. SSL Fix (Keep this at the top)
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
+import { Stagehand, AISdkClient } from "@browserbasehq/stagehand";
+import { createOpenAI } from "@ai-sdk/openai";
+import { spawn } from "child_process";
+
+// --- Token Helper ---
+async function getOAuthToken(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    // NOTE: Use "python3" on Mac/Linux
+    const pythonProcess = spawn("python", ["fetch_token.py"]);
+    let output = "";
+    pythonProcess.stdout.on("data", (data) => { output += data.toString(); });
+    pythonProcess.on("close", (code) => {
+      if (code !== 0) return reject(new Error("Python script failed"));
+      try {
+        const result = JSON.parse(output.trim());
+        resolve(result.access_token);
+      } catch (e) {
+        reject(new Error(`Failed to parse token: ${output}`));
+      }
+    });
+  });
+}
+
+async function main() {
+  console.log("🚀 Starting Stagehand...");
+
+  // 2. Configure Provider (Simpler now)
+  const customProvider = createOpenAI({
+    // Make sure this URL ends in /v1. DO NOT add /chat/completions here.
+    baseURL: "https://perf-apigw-int.saifg.rbc.com/JLC0/llm-control-stack/v1",
+    apiKey: "unused",
+    headers: async () => {
+      const token = await getOAuthToken();
+      return { 
+        "Authorization": `Bearer ${token}`,
+      };
+    },
+  });
+
+  const stagehand = new Stagehand({
+    env: "LOCAL",
+    verbose: 1,
+    llmClient: new AISdkClient({
+      // 🛠️ CRITICAL FIX: Use .chat() explicitly
+      // This forces the SDK to use the standard /chat/completions endpoint
+      // and format the body correctly with "messages".
+      model: customProvider.chat("gpt-4-1-2025-04-14-eastus-dz"), 
+    }),
+  });
+
+  await stagehand.init();
+
+  // 3. Page Logic
+  const pages = stagehand.context.pages();
+  const page = pages.length > 0 ? pages[0] : await stagehand.context.newPage();
+
+  // Test Run
+  await page.goto("https://www.google.com");
+  
+  // Use a simple Act to test the connection
+  await stagehand.act("Type 'dogs' into the search bar");
+  
+  await stagehand.close();
+}
+
+main().catch(console.error);
