@@ -1,0 +1,101 @@
+import { spawn } from "child_process";
+import { Stagehand, AISdkClient } from "@browserbasehq/stagehand";
+import { createOpenAI } from "@ai-sdk/openai";
+import { z } from "zod";
+
+// --- 1. Token Management (Reusing your Python logic) ---
+let cachedToken: string | null = null;
+let tokenExpiry: number = 0;
+
+async function getOAuthToken(): Promise<string> {
+  // If we have a valid token (buffer 60s), return it
+  if (cachedToken && Date.now() < tokenExpiry - 60000) {
+    return cachedToken;
+  }
+
+  console.log("🔄 Fetching new OAuth token via Python...");
+  
+  return new Promise((resolve, reject) => {
+    // Calling your existing fetch_token.py
+    const pythonProcess = spawn("python", ["fetch_token.py"]);
+    
+    let output = "";
+    let errorOutput = "";
+
+    pythonProcess.stdout.on("data", (data) => { output += data.toString(); });
+    pythonProcess.stderr.on("data", (data) => { errorOutput += data.toString(); });
+
+    pythonProcess.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`Python script failed: ${errorOutput}`));
+      } else {
+        try {
+          const result = JSON.parse(output.trim());
+          if (result.error) return reject(new Error(result.error));
+          
+          // Cache the token
+          cachedToken = result.access_token;
+          // Set expiry (default 1 hour if not provided)
+          const expiresIn = result.expires_in || 3600; 
+          tokenExpiry = Date.now() + (expiresIn * 1000);
+          
+          resolve(cachedToken as string);
+        } catch (e) {
+          reject(new Error(`Failed to parse OAuth response: ${output}`));
+        }
+      }
+    });
+  });
+}
+
+// --- 2. Stagehand Setup ---
+async function main() {
+  // Configure the provider with dynamic headers
+  const customProvider = createOpenAI({
+    baseURL: "https://your-custom-endpoint.com/v1", // Replace with your endpoint
+    apiKey: "unused", // SDK requires this, but we overwrite auth below
+    headers: async () => {
+      // This runs before EVERY request, ensuring the token is fresh
+      const token = await getOAuthToken();
+      return {
+        "Authorization": `Bearer ${token}`,
+        "X-Custom-Header": "If-Required"
+      };
+    },
+    // Ensure compatibility with strict tool calling
+    compatibility: "strict", 
+  });
+
+  const stagehand = new Stagehand({
+    env: "LOCAL",
+    verbose: 1,
+    // Inject the custom client here
+    llmClient: new AISdkClient({
+      model: customProvider("gpt-4-custom-model-name"), // Your actual model ID
+    }),
+  });
+
+  await stagehand.init();
+
+  // --- 3. Automation by Prompting ---
+  
+  await stagehand.page.goto("https://github.com/trending");
+
+  // Act: Perform actions using natural language
+  await stagehand.act("Click on the first repository in the list");
+
+  // Extract: Get data using natural language + Schema
+  const repoData = await stagehand.extract(
+    "Extract the repository description and star count",
+    z.object({
+      description: z.string(),
+      stars: z.string(),
+    })
+  );
+
+  console.log("🎉 Extracted Data:", repoData);
+
+  await stagehand.close();
+}
+
+main().catch(console.error);
