@@ -1,0 +1,93 @@
+import extract_msg
+import email
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.application import MIMEApplication
+import os
+
+def msg_to_rfc822(msg_path, output_path):
+    msg = extract_msg.Message(msg_path)
+    msg_message = build_mime_message(msg)
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(msg_message.as_string())
+
+
+def build_mime_message(msg):
+    """
+    Converts extract_msg.Message → email.message.EmailMessage (RFC822)
+    including nested attachments and embedded .msg/.eml emails.
+    """
+
+    mime_msg = MIMEMultipart()
+
+    # -------------------------------
+    # Standard headers
+    # -------------------------------
+    mime_msg["Subject"] = msg.subject or ""
+    mime_msg["From"] = msg.sender or ""
+    mime_msg["To"] = ", ".join(msg.to) if msg.to else ""
+    mime_msg["Cc"] = ", ".join(msg.cc) if msg.cc else ""
+    mime_msg["Date"] = msg.date or ""
+
+    # Body (TEXT and HTML)
+    if msg.body:
+        mime_msg.attach(MIMEText(msg.body, "plain", "utf-8"))
+    if msg.htmlBody:
+        mime_msg.attach(MIMEText(msg.htmlBody, "html", "utf-8"))
+
+    # -------------------------------
+    # Attachments
+    # -------------------------------
+    for att in msg.attachments:
+        fname = att.longFilename or att.shortFilename
+
+        # If attachment itself is an email
+        if fname.lower().endswith((".msg", ".eml")):
+            # Save temporarily
+            tmp_path = f"temp_{fname}"
+            with open(tmp_path, "wb") as temp:
+                temp.write(att.data)
+
+            # Process recursively
+            if fname.lower().endswith(".msg"):
+                nested_msg = extract_msg.Message(tmp_path)
+                nested_mime = build_mime_message(nested_msg)
+                os.remove(tmp_path)
+
+                mime_part = MIMEApplication(
+                    nested_mime.as_string().encode("utf-8"),
+                    Name=fname
+                )
+                mime_part.add_header("Content-Disposition", "attachment", filename=fname)
+                mime_msg.attach(mime_part)
+
+            else:  # .eml
+                with open(tmp_path, "rb") as f:
+                    nested_data = f.read()
+                os.remove(tmp_path)
+
+                mime_part = MIMEApplication(
+                    nested_data,
+                    Name=fname
+                )
+                mime_part.add_header("Content-Disposition", "attachment", filename=fname)
+                mime_msg.attach(mime_part)
+
+        else:
+            # Normal binary attachment
+            mime_part = MIMEApplication(att.data, Name=fname)
+            mime_part.add_header("Content-Disposition", "attachment", filename=fname)
+            mime_msg.attach(mime_part)
+
+    return mime_msg
+
+
+# ---------------------
+# Example Use
+# ---------------------
+input_file = "example.msg"
+output_file = "output_rfc822.txt"
+
+msg_to_rfc822(input_file, output_file)
+print("Converted to RFC 822 format:", output_file)
