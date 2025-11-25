@@ -1,0 +1,90 @@
+// ⚠️ 1. Global SSL Bypass (Easiest fix for "Self-signed certificate")
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
+import { Stagehand, AISdkClient } from "@browserbasehq/stagehand";
+import { createOpenAI } from "@ai-sdk/openai";
+import { z } from "zod";
+import { spawn } from "child_process";
+
+// --- Token Helper (Same as before) ---
+async function getOAuthToken(): Promise<string> {
+  return new Promise((resolve, reject) => {
+    // NOTE: Use "python3" if on Mac/Linux
+    const pythonProcess = spawn("python", ["fetch_token.py"]);
+    let output = "";
+    
+    pythonProcess.stdout.on("data", (data) => { output += data.toString(); });
+    
+    pythonProcess.on("close", (code) => {
+      if (code !== 0) return reject(new Error("Python script failed"));
+      try {
+        const result = JSON.parse(output.trim());
+        resolve(result.access_token);
+      } catch (e) {
+        reject(new Error(`Failed to parse token: ${output}`));
+      }
+    });
+  });
+}
+
+async function main() {
+  console.log("🚀 Starting Stagehand...");
+
+  // --- 2. Custom Provider with URL & SSL Fixes ---
+  const customProvider = createOpenAI({
+    // Replace with your EXACT internal base URL (ending in /v1 is usually safest)
+    baseURL: "https://perf-apigw-int.saifg.rbc.com/JLC0/llm-control-stack/v1", 
+    apiKey: "unused",
+    compatibility: "compatible", // Forces standard OpenAI behavior
+    
+    // This 'fetch' overrides the default network request
+    fetch: async (url, options) => {
+      let finalUrl = url.toString();
+
+      // 🛠️ FIX: Force the URL to be /chat/completions
+      // If the SDK tries to hit /responses or anything else, redirect it.
+      if (finalUrl.includes("/responses")) {
+        console.log("⚠️ SDK tried hitting /responses. Redirecting to /chat/completions");
+        finalUrl = finalUrl.replace("/responses", "/chat/completions");
+      }
+
+      // Log the actual URL being hit (for debugging)
+      console.log(`🌐 POST: ${finalUrl}`);
+
+      return fetch(finalUrl, options);
+    },
+    
+    headers: async () => {
+      const token = await getOAuthToken();
+      return { 
+        "Authorization": `Bearer ${token}`,
+        // Some internal gateways require a Model ID header
+        // "X-Model-Name": "gpt-4-1-2025-04-14-eastus-dz" 
+      };
+    },
+  });
+
+  const stagehand = new Stagehand({
+    env: "LOCAL",
+    verbose: 1,
+    llmClient: new AISdkClient({
+      // Ensure you use the exact model ID your gateway expects
+      model: customProvider("gpt-4-1-2025-04-14-eastus-dz"), 
+    }),
+  });
+
+  await stagehand.init();
+
+  // --- 3. Robust Page Logic ---
+  const pages = stagehand.context.pages();
+  const page = pages.length > 0 ? pages[0] : await stagehand.context.newPage();
+
+  // Test Run
+  await page.goto("https://www.google.com");
+  await stagehand.act("Type 'dogs' into the search bar and press Enter");
+  await stagehand.act("Click on the first organic search result link");
+  
+  await stagehand.close();
+}
+
+main().catch(console.error);
