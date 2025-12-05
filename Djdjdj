@@ -1,0 +1,68 @@
+import * as dotenv from "dotenv";
+dotenv.config();
+
+import { Stagehand } from "@browserbasehq/stagehand";
+import { execFile } from "child_process";
+import { promisify } from "util";
+
+const execFileAsync = promisify(execFile);
+
+const PYTHON_PATH = process.env.PYTHON_PATH || "python";
+const OAUTH_SCRIPT = process.env.OAUTH_SCRIPT || "fetch_token.py";
+
+const GATEWAY_MODEL_ID =
+  process.env.GATEWAY_MODEL_ID || "gpt-4.1-2025-04-14-eastus-d2";
+
+// Run Python OAuth helper
+async function getTokenAndUrl() {
+  const { stdout, stderr } = await execFileAsync(PYTHON_PATH, [OAUTH_SCRIPT]);
+
+  if (stderr) console.log("OAuth stderr:", stderr);
+
+  const data = JSON.parse(stdout.trim());
+
+  if (!data.access_token || !data.baseURL) {
+    throw new Error("OAuth script did not return access_token or baseURL");
+  }
+
+  return data;
+}
+
+async function main() {
+  // 1. Get gateway credentials
+  const { access_token, baseURL } = await getTokenAndUrl();
+
+  console.log("Gateway token:", access_token.substring(0, 15) + "...");
+  console.log("Gateway URL:", baseURL);
+
+  // 2. Create Stagehand instance with custom gateway model
+  const stagehand = new Stagehand({
+    env: "LOCAL",
+    model: {
+      modelName: GATEWAY_MODEL_ID,  // Your gateway model
+      apiKey: access_token,         // Gateway bearer token
+      baseURL: baseURL              // Your gateway base URL
+    },
+    verbose: 1,
+  });
+
+  await stagehand.init();
+
+  const page = stagehand.context.pages()[0];
+  if (!page) throw new Error("No page available");
+
+  // 3. Use Stagehand normally
+  await page.goto("https://www.google.com");
+
+  await stagehand.act("type 'dogs' into the search box");
+  await stagehand.act("press enter");
+
+  console.log("Completed search!");
+
+  await stagehand.close();
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
