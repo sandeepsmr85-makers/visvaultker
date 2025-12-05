@@ -1,0 +1,90 @@
+import * as dotenv from "dotenv";
+dotenv.config();
+
+import { Stagehand } from "@browserbasehq/stagehand";
+import { AISdkClient } from "@browserbasehq/stagehand";
+import { createOpenAI } from "@ai-sdk/openai";
+import { execFile } from "child_process";
+import { promisify } from "util";
+
+const execFileAsync = promisify(execFile);
+
+// Config
+const PYTHON_PATH = process.env.PYTHON_PATH || "python";
+const OAUTH_SCRIPT = process.env.OAUTH_SCRIPT || "fetch_token.py";
+const GATEWAY_MODEL_ID = process.env.GATEWAY_MODEL_ID || "gpt-4.1-2025-04-14-eastus-d2";
+
+// Get token and URL from Python OAuth helper
+async function getTokenAndUrl(): Promise<{ access_token: string; baseURL: string }> {
+  try {
+    const { stdout, stderr } = await execFileAsync(PYTHON_PATH, [OAUTH_SCRIPT]);
+    console.log("DEBUG: Python script stdout:", stdout);
+    if (stderr) console.log("DEBUG: Python script stderr:", stderr);
+
+    const data = JSON.parse(stdout.trim());
+
+    if (data.error) throw new Error(`OAuth script error: ${data.error}`);
+    if (!data.access_token || !data.baseURL)
+      throw new Error("OAuth script did not return access_token/baseURL");
+
+    return data;
+  } catch (error) {
+    console.error("Error calling Python OAuth script:", error);
+    throw error;
+  }
+}
+
+async function main() {
+  // Disable SSL certificate verification (development only!)
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
+  // Get fresh token + baseURL from Python OAuth helper
+  const { access_token, baseURL } = await getTokenAndUrl();
+
+  console.log("DEBUG: Token retrieved:", access_token?.substring(0, 20) + "...");
+  console.log("DEBUG: Base URL:", baseURL);
+
+  // Ensure baseURL ends with /v1 for OpenAI compatibility
+  const chatUrl = baseURL.endsWith("/v1")
+    ? baseURL
+    : baseURL.replace(/\/$/, "") + "/v1";
+
+  console.log("DEBUG: Chat URL:", chatUrl);
+
+  // Create custom OpenAI provider with your gateway
+  const customProvider = createOpenAI({
+    apiKey: access_token,
+    baseURL: chatUrl,
+  });
+
+  // Create LLM client with your gateway model
+  const llmClient = new AISdkClient({
+    model: customProvider(GATEWAY_MODEL_ID),
+  });
+
+  // Initialize Stagehand with custom LLM client
+  const stagehand = new Stagehand({
+    env: "LOCAL",
+    llmClient: llmClient,
+    verbose: 1,
+  });
+
+  await stagehand.init();
+
+  const page = stagehand.context.pages()[0];
+  if (!page) throw new Error("No page found in Stagehand context");
+
+  await page.goto("https://www.google.com");
+
+  console.log("Testing act call...");
+  await stagehand.act("type 'dogs' into the search box");
+  await stagehand.act("press Enter");
+  console.log("Act call succeeded!");
+
+  await stagehand.close();
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
