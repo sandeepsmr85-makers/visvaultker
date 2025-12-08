@@ -1,0 +1,93 @@
+import * as dotenv from "dotenv";
+dotenv.config();
+
+import { Stagehand } from "@browserbasehq/stagehand";
+import { execFile } from "child_process";
+import { promisify } from "util";
+
+const execFileAsync = promisify(execFile);
+
+// ---------------------- ENV CONFIG ----------------------
+const PYTHON_PATH = process.env.PYTHON_PATH || "python";
+const OAUTH_SCRIPT = process.env.OAUTH_SCRIPT || "fetch_token.py";
+const GATEWAY_MODEL_ID =
+  process.env.GATEWAY_MODEL_ID || "gpt-4.1-2025-04-14-eastus-dz";
+
+// ---------------------- TOKEN HANDLER ----------------------
+async function getTokenAndUrl(): Promise<{
+  access_token: string;
+  baseURL: string;
+}> {
+  const { stdout } = await execFileAsync(PYTHON_PATH, [OAUTH_SCRIPT]);
+  const data = JSON.parse(stdout.trim());
+
+  if (!data.access_token || !data.baseURL) {
+    throw new Error("OAuth script error");
+  }
+
+  return data;
+}
+
+// ---------------------- MAIN ----------------------
+async function main() {
+  // Disable SSL check for internal gateways
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
+  const { access_token, baseURL } = await getTokenAndUrl();
+
+  // Ensure /v1 endpoint
+  const chatUrl = baseURL.endsWith("/v1")
+    ? baseURL
+    : `${baseURL.replace(/\/$/, "")}/v1`;
+
+  // Init Stagehand with custom model / gateway
+  const stagehand = new Stagehand({
+    env: "LOCAL",
+    model: {
+      modelName: GATEWAY_MODEL_ID,
+      apiKey: access_token,
+      baseURL: chatUrl,
+    },
+    verbose: 2,
+    selfHeal: true,
+  });
+
+  await stagehand.init();
+
+  const page = stagehand.context.pages()[0];
+  if (!page) throw new Error("No page found in Stagehand context");
+
+  try {
+    await page.goto(
+      "https://rbcga.ea.rbc.us-east-1.aws.smarsh.cloud/portola/login"
+    );
+    console.log("✓ Testing login flow...");
+
+    await stagehand.act(
+      "enter text john.smith@rbc.com into the username field"
+    );
+
+    await stagehand.act("enter text Pa$$word123 into the password field");
+
+    await stagehand.act("click LOGIN");
+
+    await page.waitForLoadState("networkidle", 30000);
+    console.log("✓ Login navigation done");
+
+    console.log("✓ Should trigger next job switch");
+    await stagehand.act("click app switcher");
+
+    console.log("✓ Successfully clicked App Switch");
+  } catch (err: any) {
+    console.error("✗ Error:", err.message);
+    throw err;
+  } finally {
+    await stagehand.close();
+  }
+}
+
+// ---------------------- EXEC ----------------------
+main().catch((err) => {
+  console.error("✗ Error:", err.message);
+  process.exit(1);
+});
