@@ -1,0 +1,35 @@
+import base64
+from openai import OpenAI
+
+client = OpenAI()
+
+def encode_image(path):
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode("utf-8")
+
+image_path = "test.jpg"  # 🔴 local image path
+base64_image = encode_image(image_path)
+
+try:
+    response = client.responses.create(
+        model="gpt-4o-mini",  # change model if needed
+        input=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "What is in this image?"},
+                    {
+                        "type": "input_image",
+                        "image_base64": base64_image
+                    }
+                ]
+            }
+        ]
+    )
+
+    print("✅ Vision enabled")
+    print(response.output_text)
+
+except Exception as e:
+    print("❌ Vision NOT enabled")
+    print(e)
