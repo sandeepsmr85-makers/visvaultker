@@ -1,0 +1,58 @@
+import { Stagehand, AISdkClient } from "@browserbasehq/stagehand";
+import { createOpenAI } from "@ai-sdk/openai";
+import { execSync } from "child_process";
+
+// Function to pull OAuth token from your existing Python logic
+function getOfficeAuth() {
+  try {
+    const output = execSync("python3 get_token.py").toString();
+    return JSON.parse(output);
+  } catch (error) {
+    console.error("Failed to fetch OAuth token from Python script");
+    process.exit(1);
+  }
+}
+
+async function runTask() {
+  const auth = getOfficeAuth();
+
+  const stagehand = new Stagehand({
+    env: "LOCAL", // Runs on your local machine for privacy
+    llmClient: new AISdkClient({
+      model: createOpenAI({
+        baseURL: auth.baseurl,
+        apiKey: "none",
+        headers: async () => ({
+          Authorization: `Bearer ${getOfficeAuth().token}`, // Refresh token per call
+        }),
+      })("your-model-id"), // Replace with your office model name
+    }),
+  });
+
+  await stagehand.init();
+  const page = stagehand.page;
+
+  try {
+    console.log("Navigating to LinkedIn...");
+    await page.goto("https://www.linkedin.com");
+
+    console.log("Clicking Join Now...");
+    await stagehand.act("Click the 'Join now' button");
+
+    console.log("Clicking Continue with Google...");
+    await stagehand.act("Click 'Continue with Google'");
+
+    console.log("Entering name...");
+    await stagehand.act("Type %name% into the email field", {
+      variables: { name: "Sandeep" },
+    });
+
+    console.log("Step completed successfully.");
+  } catch (err) {
+    console.error("Automation failed:", err);
+  } finally {
+    await stagehand.close();
+  }
+}
+
+runTask();
