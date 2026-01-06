@@ -1,0 +1,90 @@
+import { Stagehand, AISdkClient } from "@browserbasehq/stagehand";
+import { createOpenAI } from "@ai-sdk/openai";
+import { execSync } from "child_process";
+import path from "path";
+import os from "os";
+
+function getOfficeAuth() {
+  try {
+    const output = execSync("python fetch_token.py").toString();
+    return JSON.parse(output);
+  } catch (error) {
+    console.error("Error: Could not execute fetch_token.py.");
+    process.exit(1);
+  }
+}
+
+async function runLinkedInTask() {
+  const auth = getOfficeAuth();
+  
+  // Create a local folder for the browser profile to make it "Persistent"
+  const userDataDir = path.join(os.tmpdir(), 'stagehand_profile');
+
+  const provider = createOpenAI({
+    baseURL: auth.baseurl,
+    apiKey: "OFFICE",
+    headers: { Authorization: `Bearer ${auth.token}` },
+  });
+
+  const officeModel = provider.chat("us.anthropic.claude-sonnet-4-5-20250929-v1:0");
+
+  const stagehand = new Stagehand({
+    env: "LOCAL",
+    verbose: 2,
+    llmClient: new AISdkClient({
+      model: officeModel as any,
+    }),
+    // Hardening the browser to prevent "CDP Detached"
+    browserArgs: [
+      "--disable-gpu",
+      "--no-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-blink-features=AutomationControlled" // Hides bot status
+    ],
+    enableCaching: true,
+  });
+
+  console.log("Initializing Hardened Session...");
+  await stagehand.init();
+  
+  // v3 Page selection
+  let page = stagehand.page;
+  if (!page) {
+    const pages = stagehand.context.pages();
+    page = pages.length > 0 ? pages[0] : await stagehand.context.newPage();
+  }
+
+  // Office networks need more time for iframes
+  page.setDefaultTimeout(90000); 
+
+  try {
+    console.log("Navigating to LinkedIn...");
+    await page.goto("https://www.linkedin.com", { waitUntil: "domcontentloaded" });
+
+    // Wait 5 seconds for background security checks/iframes to finish stalling
+    await new Promise(r => setTimeout(r, 5000));
+
+    console.log("Clicking 'Join now'...");
+    // We use a specific instruction to avoid the LLM getting stuck in the iframe
+    await stagehand.act("Click the main 'Join now' button in the navigation bar");
+
+    console.log("Clicking 'Continue with Google'...");
+    await stagehand.act("Click the Google sign-in button");
+
+    console.log("Entering name...");
+    await stagehand.act("Type %name% into the email field", {
+      variables: { name: "Sandeep" }
+    });
+
+    console.log("SUCCESS!");
+  } catch (err: any) {
+    console.error("Automation Failed:", err.message);
+    if (err.message.includes("detached")) {
+      console.log("TIP: Try closing all existing Chrome windows and try again.");
+    }
+  } finally {
+    await stagehand.close();
+  }
+}
+
+runLinkedInTask();
