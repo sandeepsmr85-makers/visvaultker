@@ -1,0 +1,47 @@
+import { Stagehand, AISdkClient } from "@browserbasehq/stagehand";
+import { createOpenAI } from "@ai-sdk/openai";
+import { execSync } from "child_process";
+
+// 1. Get Token
+const output = execSync("python fetch_token.py").toString();
+const auth = JSON.parse(output);
+
+async function testConnection() {
+  console.log("--- Testing AI Connection ---");
+  console.log("Endpoint:", auth.baseurl);
+
+  // 2. Setup the provider exactly as we did before
+  const provider = createOpenAI({
+    baseURL: auth.baseurl,
+    apiKey: auth.token,
+    headers: { Authorization: `Bearer ${auth.token}` },
+  });
+
+  // 3. Use the specific model
+  const model = provider("us.anthropic.claude-sonnet-4-5-20250929-v1:0");
+
+  try {
+    console.log("Sending a test message to the LLM...");
+    
+    // We use a simple Stagehand-like call to see if doGenerate works
+    const response = await model.doGenerate({
+      inputFormat: 'messages',
+      mode: { type: 'regular' },
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'Say "Hello"' }] }]
+    });
+
+    console.log("✅ Success! The AI responded.");
+    console.log("Response:", JSON.stringify(response, null, 2));
+  } catch (err: any) {
+    console.error("❌ Connection Failed!");
+    console.error("Error Name:", err.name);
+    console.error("Message:", err.message);
+    
+    if (err.message.includes("ECONNRESET")) {
+      console.log("\n[DIAGNOSIS]: Your office firewall is actively closing the connection.");
+      console.log("[FIX]: You MUST set your office proxy and disable SSL check in your terminal.");
+    }
+  }
+}
+
+testConnection();
