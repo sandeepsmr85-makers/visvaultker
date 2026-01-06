@@ -1,0 +1,76 @@
+import { Stagehand, AISdkClient } from "@browserbasehq/stagehand";
+import { createOpenAI } from "@ai-sdk/openai";
+import { execSync } from "child_process";
+
+function getOfficeAuth() {
+  try {
+    const output = execSync("python fetch_token.py").toString();
+    return JSON.parse(output);
+  } catch (error) {
+    console.error("Error: Python token fetch failed.");
+    process.exit(1);
+  }
+}
+
+async function runLinkedInTask() {
+  const auth = getOfficeAuth();
+
+  // 1. Setup the provider
+  const provider = createOpenAI({
+    baseURL: auth.baseurl,
+    apiKey: "OFFICE",
+    headers: { Authorization: `Bearer ${auth.token}` },
+  });
+
+  // 2. Wrap the model and apply the v2 shim for compatibility
+  const rawModel = provider("us.anthropic.claude-sonnet-4-5-20250929-v1:0");
+  const officeModel = {
+    ...rawModel,
+    specificationVersion: 'v2', 
+  };
+
+  const stagehand = new Stagehand({
+    env: "LOCAL",
+    verbose: 2,
+    llmClient: new AISdkClient({
+      model: officeModel as any,
+    }),
+    browserArgs: ["--no-sandbox", "--disable-gpu"]
+  });
+
+  console.log("Initializing Stagehand...");
+  await stagehand.init();
+  
+  // 3. Official v3 Page Acquisition
+  // Using context.pages()[0] as stagehand.page is deprecated
+  let page = stagehand.context.pages()[0];
+
+  // Fallback if the first page isn't ready immediately
+  if (!page) {
+    console.log("No initial page found, creating new page...");
+    page = await stagehand.context.newPage();
+  }
+
+  try {
+    console.log("Navigating to LinkedIn...");
+    await page.goto("https://www.linkedin.com", { waitUntil: "domcontentloaded" });
+    
+    // Give office security scripts time to settle
+    await new Promise(r => setTimeout(r, 4000));
+
+    console.log("Executing actions...");
+    await stagehand.act("Click the 'Join now' button");
+    await stagehand.act("Click the 'Continue with Google' button");
+    await stagehand.act("Type %name% into the email field", {
+      variables: { name: "Sandeep" }
+    });
+
+    console.log("Process complete!");
+  } catch (err: any) {
+    console.error("Automation Error:", err.message);
+  } finally {
+    await stagehand.close();
+  }
+}
+
+runLinkedInTask();
