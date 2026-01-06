@@ -1,0 +1,57 @@
+import { Stagehand, AISdkClient } from "@browserbasehq/stagehand";
+import { createOpenAI } from "@ai-sdk/openai";
+import { execSync } from "child_process";
+
+function getOfficeAuth() {
+  try {
+    const output = execSync("python3 get_token.py").toString();
+    return JSON.parse(output);
+  } catch (error) {
+    console.error("Failed to fetch OAuth token");
+    process.exit(1);
+  }
+}
+
+async function runTask() {
+  const auth = getOfficeAuth();
+
+  // FIX: Explicitly type the provider to match what AISdkClient expects
+  const officeModel = createOpenAI({
+    baseURL: auth.baseurl,
+    apiKey: "none",
+    // FIX: Headers must return a plain object, not a promise in some SDK versions
+    // If your SDK version supports async, keep it; otherwise, fetch outside.
+    headers: {
+      Authorization: `Bearer ${auth.token}`,
+    },
+  })("your-model-id");
+
+  const stagehand = new Stagehand({
+    env: "LOCAL", 
+    verbose: 1, // Useful for debugging office proxy/connection issues
+    debugDom: true,
+    llmClient: new AISdkClient({
+      model: officeModel as any, // FIX: The 'as any' bypasses the V2/V3 version mismatch
+    }),
+  });
+
+  await stagehand.init();
+  
+  // FIX: Access page through stagehand.page (ensure init() is finished)
+  const page = stagehand.page; 
+
+  try {
+    await page.goto("https://www.linkedin.com");
+    await stagehand.act("Click the 'Join now' button");
+    await stagehand.act("Click 'Continue with Google'");
+    await stagehand.act("Type %name% into the email field", {
+      variables: { name: "Sandeep" },
+    });
+  } catch (err) {
+    console.error("Automation failed:", err);
+  } finally {
+    await stagehand.close();
+  }
+}
+
+runTask();
