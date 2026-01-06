@@ -1,0 +1,77 @@
+import { Stagehand, AISdkClient } from "@browserbasehq/stagehand";
+import { createOpenAI } from "@ai-sdk/openai";
+import { execSync } from "child_process";
+
+/**
+ * Fetches the OAuth token and Base URL from your local Python script.
+ */
+function getOfficeAuth() {
+  try {
+    // Changed to match your file name: fetch_token.py
+    const output = execSync("python fetch_token.py").toString();
+    return JSON.parse(output);
+  } catch (error) {
+    console.error("Error: Could not fetch OAuth token from fetch_token.py.");
+    process.exit(1);
+  }
+}
+
+async function runLinkedInTask() {
+  const auth = getOfficeAuth();
+
+  // 1. Configure for your specific Anthropic Claude model
+  const officeModel = createOpenAI({
+    baseURL: auth.baseurl,
+    apiKey: "NOT_REQUIRED", 
+    headers: {
+      Authorization: `Bearer ${auth.token}`,
+    },
+  })("us.anthropic.claude-sonnet-4-5-20250929-v1:0");
+
+  // 2. Initialize Stagehand v3
+  const stagehand = new Stagehand({
+    env: "LOCAL", 
+    verbose: 2, 
+    llmClient: new AISdkClient({
+      model: officeModel as any, // Cast bypasses version mismatch
+    }),
+  });
+
+  await stagehand.init();
+  
+  // In v3, stagehand.page is available after init()
+  const page = stagehand.page;
+
+  if (!page) {
+    console.error("Browser page not found.");
+    await stagehand.close();
+    return;
+  }
+
+  try {
+    console.log("Navigating to LinkedIn...");
+    await page.goto("https://www.linkedin.com");
+
+    console.log("Attempting to Join...");
+    await stagehand.act("Click on the 'Join now' button");
+
+    console.log("Choosing Google Login...");
+    await stagehand.act("Click the 'Continue with Google' button");
+
+    console.log("Entering name...");
+    // Using %variable% ensures the string is typed by the driver, not the LLM
+    await stagehand.act("Type %name% into the email or phone field", {
+      variables: {
+        name: "Sandeep"
+      }
+    });
+
+    console.log("Done!");
+  } catch (err) {
+    console.error("Workflow failed:", err);
+  } finally {
+    await stagehand.close();
+  }
+}
+
+runLinkedInTask();
