@@ -1,0 +1,70 @@
+import { Stagehand, AISdkClient } from "@browserbasehq/stagehand";
+import { createOpenAI } from "@ai-sdk/openai";
+import { execSync } from "child_process";
+
+function getOfficeAuth() {
+  try {
+    const output = execSync("python fetch_token.py").toString();
+    return JSON.parse(output);
+  } catch (error) {
+    console.error("Error fetching token.");
+    process.exit(1);
+  }
+}
+
+async function runLinkedInTask() {
+  const auth = getOfficeAuth();
+
+  const officeModel = createOpenAI({
+    baseURL: auth.baseurl,
+    apiKey: "OFFICE",
+    headers: { Authorization: `Bearer ${auth.token}` },
+  }).chat("us.anthropic.claude-sonnet-4-5-20250929-v1:0");
+
+  const stagehand = new Stagehand({
+    env: "LOCAL",
+    verbose: 2,
+    llmClient: new AISdkClient({
+      model: officeModel as any,
+    }),
+    browserArgs: [
+      "--disable-gpu",
+      "--no-sandbox",
+      "--disable-blink-features=AutomationControlled"
+    ]
+  });
+
+  console.log("Initializing...");
+  await stagehand.init();
+  
+  // Use the stagehand.page directly
+  const page = stagehand.page;
+
+  try {
+    console.log("Navigating to LinkedIn...");
+    // We navigate and wait for the network to be somewhat idle
+    await page.goto("https://www.linkedin.com", { waitUntil: "networkidle" });
+
+    // Small sleep to let office security scripts settle
+    await new Promise(r => setTimeout(r, 3000));
+
+    console.log("Clicking 'Join now'...");
+    await stagehand.act("Click the 'Join now' button");
+
+    console.log("Clicking 'Continue with Google'...");
+    await stagehand.act("Click the 'Continue with Google' button");
+
+    console.log("Typing name...");
+    await stagehand.act("Type %name% into the email field", {
+      variables: { name: "Sandeep" }
+    });
+
+    console.log("Success!");
+  } catch (err: any) {
+    console.error("Automation Failed:", err.message);
+  } finally {
+    await stagehand.close();
+  }
+}
+
+runLinkedInTask();
