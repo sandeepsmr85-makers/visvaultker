@@ -1,0 +1,83 @@
+import { Stagehand, AISdkClient } from "@browserbasehq/stagehand";
+import { createOpenAI } from "@ai-sdk/openai";
+import { execSync } from "child_process";
+
+/**
+ * Fetches OAuth token and Base URL from your local Python script.
+ */
+function getOfficeAuth() {
+  try {
+    // Note: Ensure your .venv is active in the terminal before running
+    const output = execSync("python fetch_token.py").toString();
+    return JSON.parse(output);
+  } catch (error) {
+    console.error("Error: Could not execute fetch_token.py. Ensure Python is in your PATH and the file exists.");
+    process.exit(1);
+  }
+}
+
+async function runLinkedInTask() {
+  const auth = getOfficeAuth();
+
+  // 1. Setup the OpenAI-compatible provider for your internal Claude model
+  const provider = createOpenAI({
+    baseURL: auth.baseurl,
+    apiKey: "NOT_USED", // Authentication is handled via headers
+    headers: {
+      Authorization: `Bearer ${auth.token}`,
+    },
+  });
+
+  // 2. Use .chat() to bypass versioning conflicts (Fixes UnsupportedModelVersionError)
+  const officeModel = provider.chat("us.anthropic.claude-sonnet-4-5-20250929-v1:0");
+
+  // 3. Initialize Stagehand v3
+  const stagehand = new Stagehand({
+    env: "LOCAL", 
+    verbose: 2, 
+    llmClient: new AISdkClient({
+      model: officeModel as any, // Bypass internal type mismatch
+    }),
+  });
+
+  console.log("Initializing Stagehand and Browser...");
+  await stagehand.init();
+  
+  // 4. Robust Page Selection
+  let page = stagehand.page;
+  if (!page) {
+    const pages = stagehand.context.pages();
+    page = pages.length > 0 ? pages[0] : await stagehand.context.newPage();
+  }
+
+  try {
+    console.log("Navigating to LinkedIn...");
+    // Using 'commit' or 'domcontentloaded' helps bypass stalling in office networks
+    await page.goto("https://www.linkedin.com", { waitUntil: "domcontentloaded" });
+
+    console.log("Step 1: Clicking 'Join now'...");
+    await stagehand.act("Click on the 'Join now' button");
+
+    console.log("Step 2: Clicking 'Continue with Google'...");
+    // Stagehand will automatically handle the iframe stalling you saw in the logs
+    await stagehand.act("Click the 'Continue with Google' button");
+
+    console.log("Step 3: Entering name...");
+    await stagehand.act("Type %name% into the email or phone field", {
+      variables: {
+        name: "Sandeep"
+      }
+    });
+
+    console.log("--- Automation Completed Successfully ---");
+  } catch (err) {
+    console.error("--- Automation Failed ---");
+    console.error(err);
+  } finally {
+    console.log("Closing session...");
+    await stagehand.close();
+  }
+}
+
+// Start the script
+runLinkedInTask();
