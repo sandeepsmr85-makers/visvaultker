@@ -1,0 +1,118 @@
+from flask import Flask, request, redirect, url_for, flash
+import json
+
+app = Flask(__name__)
+app.secret_key = "secret-key"
+FILE_NAME = "participants-20260106.json"
+
+
+# -------------------- Helpers --------------------
+
+def load_data():
+    with open(FILE_NAME, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_data(data):
+    with open(FILE_NAME, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def search_by_known_entity_id(data, entity_id):
+    matches = []
+    for idx, record in enumerate(data):
+        if record.get("value") == entity_id:
+            matches.append(idx)
+            continue
+
+        for v in record.get("properties", {}).values():
+            if v == entity_id or (isinstance(v, list) and entity_id in v):
+                matches.append(idx)
+                break
+    return matches
+
+
+# -------------------- Routes --------------------
+
+@app.route("/", methods=["GET", "POST"])
+def index():
+    if request.method == "POST":
+        entity_id = request.form["entity_id"]
+        return redirect(url_for("results", entity_id=entity_id))
+
+    return """
+    <h2>Search by Known Entity ID</h2>
+    <form method="post">
+        <input name="entity_id" required>
+        <button type="submit">Search</button>
+    </form>
+    """
+
+
+@app.route("/results/<entity_id>")
+def results(entity_id):
+    data = load_data()
+    match_indexes = search_by_known_entity_id(data, entity_id)
+
+    if not match_indexes:
+        return f"<p>No records found for {entity_id}</p><a href='/'>Back</a>"
+
+    html = f"<h2>Matching Records for {entity_id}</h2>"
+
+    for idx in match_indexes:
+        record = data[idx]
+        html += "<hr>"
+        html += f"<p><b>Record Index:</b> {idx}</p>"
+        html += f"<p><b>Key:</b> {record.get('key')}</p>"
+        html += f"<p><b>Value:</b> {record.get('value')}</p>"
+        html += "<ul>"
+        for k, v in record.get("properties", {}).items():
+            html += f"<li>{k}: {v}</li>"
+        html += "</ul>"
+        html += f"<a href='/update/{idx}'>Update this record</a>"
+
+    html += "<br><br><a href='/'>Back</a>"
+    return html
+
+
+@app.route("/update/<int:record_index>", methods=["GET", "POST"])
+def update(record_index):
+    data = load_data()
+    record = data[record_index]
+    props = record.get("properties", {})
+
+    if request.method == "POST":
+        prop = request.form["property"]
+        new_value = request.form["value"]
+
+        if prop not in props:
+            return "<p>Property does not exist. Update blocked.</p><a href='/'>Home</a>"
+
+        old_value = props[prop]
+        props[prop] = [new_value] if isinstance(old_value, list) else new_value
+
+        save_data(data)
+        return "<p>Property updated successfully.</p><a href='/'>Home</a>"
+
+    # GET view
+    options = "".join([f"<option value='{k}'>{k}</option>" for k in props.keys()])
+
+    return f"""
+    <h2>Update Record {record_index}</h2>
+    <form method="post">
+        <label>Property</label><br>
+        <select name="property">{options}</select><br><br>
+
+        <label>New Value</label><br>
+        <input name="value" required><br><br>
+
+        <button type="submit">Update</button>
+    </form>
+    <br><a href='/'>Home</a>
+    """
+
+
+# -------------------- Run --------------------
+
+if __name__ == "__main__":
+    app.run(debug=True)
