@@ -1,0 +1,9 @@
+Fix 1 — Tool filtering (biggest impact)
+Every API call was sending all 107 tool definitions. Now selectTools() reads your prompt keywords and sends only the relevant ones. An Airflow+S3 workflow now sends ~40 tools instead of 107 — roughly 60% less payload per call.
+Fix 2 — MAX_TURNS: 30 → 15
+Most workflows complete in under 10 turns. 30 was just an open-ended wait.
+Fix 3 — max_tokens: 4000 → 2000 per execution turn
+Each turn only needs to reason + call one tool. 4000 tokens was making Claude wait to “fill” its response budget unnecessarily.
+Fix 4 — max_tokens: 3000 → 1500 for parsing
+Parse only returns JSON — it never needs 3000 tokens.
+Fix 5 — Parse failure no longer blocks execution
