@@ -1,0 +1,52 @@
+⸻
+
+1. Publish Date vs Business Date
+
+* Publish Date → The date when data is processed/published in the system.
+* Business Date → The actual date the data belongs to (business context).
+
+👉 One publish date can have multiple business dates.
+
+⸻
+
+2. Different Data Sources Use Different Dates
+
+* Cloud reconciled summary table → based on publish date
+* Dashboard view → based on business date
+
+👉 So, they are not aligned by default.
+
+⸻
+
+3. Why Count Mismatch Happens
+
+* When you count using publish date, you include all records published that day
+* When you count using business date, you include only records for that specific business date
+
+👉 Hence:
+
+Publish date count ≥ Business date count
+
+⸻
+
+4. Current Logic Difference
+
+* Reconciled count → filtered by:
+    * Publish date ✅
+    * Business date ✅ (2-level filter)
+* Conduct count → filtered by:
+    * Publish date only ❌
+    * Business date not considered ❌
+
+👉 This inconsistency causes mismatch.
+
+⸻
+
+5. What Needs to Be Done
+
+* For conduct data, we must:
+    1. Fetch records using publish date
+    2. Identify their business dates
+    3. Filter/tally based on same business date
+
+👉 This aligns both datasets.
