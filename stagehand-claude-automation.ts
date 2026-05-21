@@ -1,12 +1,12 @@
-import { Stagehand } from "@browserbasehq/stagehand";
+import { Stagehand, AISdkClient } from "@browserbasehq/stagehand";
+import { createAmazonBedrock } from "@ai-sdk/amazon-bedrock";
 import { execSync } from "child_process";
 import * as readline from "readline";
 
 // ──────────────────────────────────────────────
-// CONFIG — Stagehand v3.2.1 (docs-verified)
-// Model format: "anthropic/claude-sonnet-4-6"
-// Custom gateway via model.baseURL  (official pattern)
+// MODEL — AWS Bedrock cross-region inference ID
 // ──────────────────────────────────────────────
+const MODEL_ID = "us.anthropic.claude-sonnet-4-6";
 
 // ──────────────────────────────────────────────
 // STEP 1 — Fetch OAuth token via Python script
@@ -33,7 +33,7 @@ function fetchOAuthToken(): TokenResult {
 
     const result: TokenResult = JSON.parse(output);
     console.log("✅ Token fetched successfully");
-    console.log("🌐 Base URL         :", result.baseURL);
+    console.log("🌐 Base URL :", result.baseURL);
     return result;
   } catch (err) {
     console.error("❌ Failed to fetch OAuth token:", err);
@@ -61,7 +61,7 @@ async function askQuestion(question: string): Promise<string> {
 // MAIN
 // ──────────────────────────────────────────────
 async function main() {
-  // 1. Get OAuth token from Python fetcher
+  // 1. Get OAuth token
   const tokenData = fetchOAuthToken();
   const { access_token, baseURL } = tokenData;
 
@@ -70,58 +70,75 @@ async function main() {
   const userPrompt = await askQuestion("Enter your automation task: ");
 
   console.log("\n🚀 Starting Stagehand v3.2.1");
-  console.log("🤖 Model     : anthropic/claude-sonnet-4-6 (us cross-region)");
-  console.log("🌐 URL       :", startUrl);
-  console.log("📋 Task      :", userPrompt);
+  console.log("🤖 Model  :", MODEL_ID);
+  console.log("🌐 URL    :", startUrl);
+  console.log("📋 Task   :", userPrompt);
   console.log("─".repeat(60));
 
-  // 3. Init Stagehand — official v3 pattern for custom Anthropic endpoint
-  //    docs: https://docs.stagehand.dev/v3/configuration/models#custom-endpoints
-  const stagehand = new Stagehand({
-    env:     "LOCAL",
-    verbose: 1,
-    headless: false,
-    model: {
-      modelName: "anthropic/claude-sonnet-4-6",  // ✅ provider/model format (v3 docs)
-      apiKey:    access_token,                    // OAuth Bearer token as the API key
-      baseURL:   baseURL,                          // ✅ your gateway, not api.anthropic.com
+  // 3. Build Amazon Bedrock provider
+  //    - baseURL points to your OAuth gateway (not AWS directly)
+  //    - fetch is overridden to inject "Authorization: Bearer <token>"
+  //    - us.anthropic.* model IDs are natively supported by @ai-sdk/amazon-bedrock
+  const bedrockProvider = createAmazonBedrock({
+    region:          process.env.AWS_REGION || "us-east-1",
+    accessKeyId:     "placeholder",      // not used — gateway handles AWS auth
+    secretAccessKey: "placeholder",      // not used — gateway handles AWS auth
+    bedrockOptions: {
+      endpoint:  { url: new URL(baseURL) }, // ✅ route to your gateway
+    },
+    // ✅ Inject Bearer token on every request via custom fetch
+    fetch: (input, init) => {
+      const headers = new Headers(init?.headers);
+      headers.set("Authorization", `Bearer ${access_token}`);
+      return fetch(input, { ...init, headers });
     },
   });
 
-  await stagehand.init();
+  // 4. Wrap in AISdkClient for Stagehand
+  const llmClient = new AISdkClient({
+    model: bedrockProvider(MODEL_ID),   // ✅ us.anthropic.claude-sonnet-4-6
+  });
 
-  // v3 docs: use stagehand.page (not stagehand.context.pages()[0])
-  const page = stagehand.page;
+  // 5. Init Stagehand
+  const stagehand = new Stagehand({
+    env:      "LOCAL",
+    verbose:  1,
+    headless: false,
+    llmClient,
+  });
+
+  await stagehand.init();
+  const page = await stagehand.context.newPage();
 
   try {
-    // 4. Navigate
+    // 6. Navigate
     await page.goto(startUrl, { waitUntil: "domcontentloaded" });
     console.log("\n✅ Page loaded:", startUrl);
 
-    // 5. Act — execute the user's task
+    // 7. Act
     console.log("\n🤖 Executing task with Claude...\n");
     const actionResult = await stagehand.act(userPrompt);
     console.log("📊 Action result:", actionResult);
 
-    // 6. Observe — what's on the page now
+    // 8. Observe
     console.log("\n🔍 Observing page state...");
     const observations = await stagehand.observe(
       `What is visible on the page after completing: "${userPrompt}"?`
     );
     console.log("👁  Observations:", observations);
 
-    // 7. Extract — pull structured results
+    // 9. Extract
     console.log("\n📦 Extracting results...");
     const extracted = await stagehand.extract(
       `Based on the task "${userPrompt}", extract the most relevant information from the current page.`
     );
 
-    // 8. Final output
+    // 10. Final output
     console.log("\n" + "═".repeat(60));
     console.log("✅  TASK COMPLETE");
     console.log("═".repeat(60));
-    console.log("📄 Extracted  :", extracted);
-    console.log("🔗 Final URL  :", page.url());
+    console.log("📄 Extracted :", extracted);
+    console.log("🔗 Final URL :", page.url());
 
   } catch (error) {
     console.error("\n❌ Automation error:", error);
