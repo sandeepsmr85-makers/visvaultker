@@ -1,0 +1,21 @@
+import { Stagehand, AISdkClient } from "@browserbasehq/stagehand";
+import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
+import { execSync } from "child_process";
+
+const { access_token, base_url } = JSON.parse(
+  execSync("python get_creds.py").toString()
+);
+
+const provider = createOpenAICompatible({
+  name: "gateway",
+  apiKey: access_token,
+  baseURL: base_url,
+});
+
+const stagehand = new Stagehand({
+  env: "LOCAL",
+  verbose: 1,
+  llmClient: new AISdkClient({
+    model: provider("us.anthropic.claude-sonnet-4-6"),
+  }),
+});
