@@ -1,0 +1,31 @@
+import { Stagehand } from "@browserbasehq/stagehand";
+import { execSync } from "child_process";
+
+async function main() {
+  const { access_token, base_url } = JSON.parse(
+    execSync("python get_creds.py").toString()
+  );
+
+  const stagehand = new Stagehand({
+    env: "LOCAL",
+    verbose: 1,
+    model: {
+      modelName: "anthropic/claude-haiku-4-5",
+      apiKey: access_token,
+      baseURL: base_url,
+    },
+  });
+
+  await stagehand.init();
+  const page = stagehand.context.pages()[0];
+  await page.goto("https://www.google.com");
+  await stagehand.act("Search for dogs");
+  console.log("Page title:", await page.title());
+  await stagehand.close();
+}
+
+npm uninstall ai @ai-sdk/openai @ai-sdk/openai-compatible @ai-sdk/anthropic
+rm -rf node_modules package-lock.json
+npm install
+
+main().catch((err) => console.error("Error:", err));
