@@ -1,0 +1,9 @@
+Hi Team,
+
+As part of the Active vs Inactive stories, I’ve developed an interim automation script that analyzes Participant Employee table data, randomly selects records, and updates the corresponding entries in the Participant JSON file. This allows me to execute and validate the 16 primary scenarios defined by Monica.
+
+Since end-to-end testing is currently not possible because Participant JSON generation is not reflecting the underlying QA tables, I’ve broken the testing into two parts. The current validation focuses on manipulating the monitored_employee and inactive_monitored_employee tables, while using a mocked Participant JSON file to validate the Active vs Inactive logic.
+
+I believe this approach covers most of the testing scenarios. However, this story is ultimately about validating the end-to-end pipeline, and I won’t have full confidence until the Participant file is generated through the actual process as intended. I have a few blind spots in that flow and would appreciate guidance on how we can properly validate the end-to-end behavior.
+
+I’d appreciate Monica, Anand, and Mani’s support in reviewing the approach and validating the results. I’d like to walk everyone through the findings and discuss the gaps. Thanks.
