@@ -1,0 +1,134 @@
+"""
+XML Structure Analyzer
+-----------------------
+Analyzes any XML file (e.g. Informatica PowerCenter export XML) and reports:
+  1. Every distinct element path in the tree
+  2. How many times each path occurs (cardinality)
+  3. Attributes seen at each path, with sample values
+  4. Sample text content (if any) at each path
+
+Outputs:
+  - A printed summary to console
+  - A single text file "xml_structure_report.txt" with the full structure info
+
+Usage:
+    python xml_structure_analyzer.py your_file.xml
+"""
+
+import sys
+from collections import defaultdict
+from lxml import etree
+
+
+def analyze_xml(file_path, max_samples=3):
+    """
+    Walk the XML tree and collect structural info per element path.
+    Returns a dict keyed by path with details.
+    """
+    parser = etree.XMLParser(recover=True, huge_tree=True)
+    tree = etree.parse(file_path, parser)
+    root = tree.getroot()
+
+    # path -> info dict
+    info = defaultdict(lambda: {
+        "count": 0,
+        "attributes": defaultdict(set),   # attr_name -> set of sample values
+        "text_samples": set(),
+        "children": set(),
+    })
+
+    def get_path(elem, path_stack):
+        return "/".join(path_stack)
+
+    def walk(elem, path_stack):
+        tag = etree.QName(elem).localname if elem.tag is not etree.Comment else "#comment"
+        path_stack = path_stack + [tag]
+        path = "/".join(path_stack)
+
+        rec = info[path]
+        rec["count"] += 1
+
+        # attributes
+        for k, v in elem.attrib.items():
+            if len(rec["attributes"][k]) < max_samples:
+                rec["attributes"][k].add(v)
+
+        # text content (ignore whitespace-only)
+        if elem.text and elem.text.strip():
+            if len(rec["text_samples"]) < max_samples:
+                rec["text_samples"].add(elem.text.strip()[:80])
+
+        # children tags (direct)
+        for child in elem:
+            child_tag = etree.QName(child).localname if child.tag is not etree.Comment else "#comment"
+            rec["children"].add(child_tag)
+
+        for child in elem:
+            walk(child, path_stack)
+
+    walk(root, [])
+    return info
+
+
+def print_summary(info):
+    print("\n" + "=" * 80)
+    print("XML STRUCTURE SUMMARY")
+    print("=" * 80)
+
+    for path in sorted(info.keys()):
+        rec = info[path]
+        print(f"\nPATH: {path}")
+        print(f"  Occurrences : {rec['count']}")
+        if rec["children"]:
+            print(f"  Child tags  : {', '.join(sorted(rec['children']))}")
+        if rec["attributes"]:
+            print("  Attributes  :")
+            for attr, samples in rec["attributes"].items():
+                sample_str = " | ".join(list(samples)[:3])
+                print(f"    - {attr}  (e.g. {sample_str})")
+        if rec["text_samples"]:
+            sample_str = " | ".join(list(rec["text_samples"])[:2])
+            print(f"  Text sample : {sample_str}")
+
+
+def write_csv_reports(info, base_name="xml_structure"):
+    # Report 1: one row per path+attribute (detailed)
+    detail_file = f"{base_name}_report.csv"
+    with open(detail_file, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["path", "occurrences", "attribute", "sample_values"])
+        for path in sorted(info.keys()):
+            rec = info[path]
+            if rec["attributes"]:
+                for attr, samples in rec["attributes"].items():
+                    writer.writerow([path, rec["count"], attr, " | ".join(samples)])
+            else:
+                writer.writerow([path, rec["count"], "", ""])
+
+    # Report 2: one row per path (summary)
+    summary_file = f"{base_name}_summary.csv"
+    with open(summary_file, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["path", "occurrences", "child_tags", "attribute_names", "text_sample"])
+        for path in sorted(info.keys()):
+            rec = info[path]
+            writer.writerow([
+                path,
+                rec["count"],
+                ", ".join(sorted(rec["children"])),
+                ", ".join(rec["attributes"].keys()),
+                " | ".join(list(rec["text_samples"])[:1]),
+            ])
+
+    print(f"\nCSV reports written:\n  - {detail_file}\n  - {summary_file}")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python xml_structure_analyzer.py <path_to_xml_file>")
+        sys.exit(1)
+
+    xml_path = sys.argv[1]
+    info = analyze_xml(xml_path)
+    print_summary(info)
+    write_csv_reports(info)
