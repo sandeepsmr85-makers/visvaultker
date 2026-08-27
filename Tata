@@ -1,0 +1,873 @@
+COMPLETE PLAN — SYNTHETIC RFC 822 COMMUNICATION GENERATION & SCREENING TESTING PLATFORM
+
+1. PURPOSE
+
+Build a web application that takes existing journaled email/TXT communication as templates, understands their structure and communication patterns, and generates realistic synthetic employee conversations for testing an email-screening/monitoring system.
+
+The system should generate four primary categories:
+
+1. Business-sensitive / suspicious communication
+2. Communication-platform switching
+3. Personal communication that looks suspicious but is actually harmless
+4. Normal/non-alerting communication
+
+The generated communication must preserve the structural characteristics of the source emails while creating completely new content.
+
+2. INPUT
+
+The application accepts a directory or uploaded collection of TXT files containing RFC 822-formatted emails.
+
+The files may contain:
+
+* Normal emails
+* Journaled emails
+* Emails containing an inner/original email
+* Standalone emails
+* Reply conversations
+* Forwarded conversations
+* Multi-person conversations
+* CC-based conversations
+* Different email formats and structures
+
+3. PRIMARY PROCESSING RULE
+
+For every input email:
+
+IF an inner/original email exists:
+
+* Extract the inner email.
+* Analyze the inner email.
+* Determine its participants and conversation structure.
+* Generate the synthetic communication inside the inner email.
+* Preserve the outer journal/envelope structure.
+* Place the newly generated inner email back into the same overall structure.
+
+IF an inner/original email does NOT exist:
+
+* Analyze the outer email directly.
+* Generate the synthetic communication in the outer email.
+* Preserve its RFC 822 structure.
+
+This should be a hard rule in the application.
+
+4. EMAIL STRUCTURE ANALYZER
+
+The first stage should parse the RFC 822 structure.
+
+It should identify:
+
+* From
+* To
+* CC
+* BCC, if available
+* Subject
+* Date
+* Message-ID
+* In-Reply-To
+* References
+* MIME information
+* Attachments/attachment metadata where relevant
+* Body
+* Quoted replies
+* Forwarded content
+* Nested/original message
+* Journal metadata
+
+The original source files should remain read-only.
+
+5. INNER EMAIL DETECTION
+
+The application needs a dedicated component that determines whether the journaled message contains an original/inner email.
+
+Possible structure:
+
+Outer journal
+|
++– Journal metadata
+|
++– Original/inner email
+|
++– From
++– To
++– Subject
++– Body
+
+If detected:
+
+Processing target = INNER EMAIL
+
+Otherwise:
+
+Processing target = OUTER EMAIL
+
+The application should record which level was processed.
+
+6. CONVERSATION ANALYSIS
+
+For every communication, determine:
+
+* Number of participants
+* Unique participants
+* Sender/recipient relationships
+* Internal vs external participants
+* Number of messages
+* Thread depth
+* Reply sequence
+* Forward chain
+* CC pattern
+* Conversation length
+* Message length
+* Communication style
+* Formal vs informal language
+* Business vs personal characteristics
+* One-to-one vs group communication
+
+7. CONVERSATION TOPOLOGY
+
+The system should understand who communicates with whom.
+
+For example:
+
+A -> B
+B -> A
+A -> B
+B -> A
+
+This is a two-person conversation.
+
+Another:
+
+A -> B
+B -> A
+A -> C
+C -> A
+A -> B
+
+This is a three-person conversation with a particular participation pattern.
+
+The generated conversation should maintain a similar structural pattern.
+
+The system should not take a three-person source and randomly produce a one-person email.
+
+8. TEMPLATE PROFILING
+
+Every source conversation should be converted into a template profile.
+
+Example:
+
+Template ID:
+TEMPLATE_001
+
+Participants:
+3
+
+Message count:
+7
+
+Conversation type:
+Group reply thread
+
+CC:
+Yes
+
+Forward:
+No
+
+Thread depth:
+6
+
+Style:
+Informal business
+
+Average message length:
+Medium
+
+This profile becomes the structural blueprint for generation.
+
+9. ANONYMIZATION
+
+Before using real communication as a generation template, remove or abstract identifiable information.
+
+For example:
+
+Real employee:
+john.smith@company.com
+
+Internal representation:
+
+EMPLOYEE_A
+
+Another:
+
+jane.doe@company.com
+
+becomes:
+
+EMPLOYEE_B
+
+Real customer/company/project information should similarly be abstracted where appropriate.
+
+The system should use the original communication for structure and style, not reproduce the original sensitive information.
+
+10. ALERT CONCEPT INPUT
+
+The user provides alert-triggering words, phrases, concepts, or rules.
+
+Example:
+
+leak announcement
+customer data
+confidential information
+source code
+credentials
+financial information
+
+The system should support both literal and semantic interpretation.
+
+For example:
+
+“leak announcement”
+
+should not mean that the generator simply inserts the phrase “leak announcement.”
+
+It should understand related concepts such as:
+
+* unauthorized disclosure
+* sharing restricted information
+* getting information outside the organization
+* coordinating an unauthorized disclosure
+* discussing how to release restricted information
+
+11. SCENARIO PLANNING ENGINE
+
+Before generating an email, the application should create an internal scenario plan.
+
+Example:
+
+Concept:
+Leak announcement
+
+Category:
+Business Sensitive
+
+Behavior:
+Employees coordinating unauthorized disclosure
+
+Participants:
+3
+
+Messages:
+6
+
+Difficulty:
+Hard
+
+Literal trigger:
+No
+
+Semantic trigger:
+Yes
+
+Platform switching:
+Yes
+
+This planning stage is extremely important.
+
+The AI should first decide WHAT should happen and then generate HOW the employees communicate about it.
+
+12. BEHAVIOR LIBRARY
+
+Create a reusable library of suspicious communication behaviors.
+
+Examples:
+
+* Unauthorized information sharing
+* Restricted data transfer
+* Attempting to bypass approved channels
+* Requesting sensitive information
+* Providing sensitive information
+* Coordinating unauthorized disclosure
+* Concealing activity
+* Moving communication outside approved channels
+* Attempting to involve unauthorized recipients
+
+The behavior library should be mapped to alert concepts.
+
+13. FOUR PRIMARY GENERATION CATEGORIES
+
+CATEGORY 1 — BUSINESS-SENSITIVE
+
+Employees themselves are participating in suspicious activity.
+
+They should not merely be discussing an incident that happened elsewhere.
+
+Examples of scenarios:
+
+* Employees sharing restricted information
+* Employees coordinating unauthorized disclosure
+* Employees requesting sensitive information
+* Employees transferring information through unauthorized channels
+* Employees attempting to conceal the activity
+
+The expected result should normally be:
+
+ALERT
+
+CATEGORY 2 — COMMUNICATION-PLATFORM SWITCHING
+
+Employees move a potentially sensitive discussion away from the monitored channel.
+
+Examples:
+
+* Moving to personal email
+* Moving to messaging applications
+* Asking to discuss by phone
+* Avoiding the current email thread
+* Suggesting another communication channel
+
+The system should generate both suspicious and contextual variations.
+
+CATEGORY 3 — PERSONAL SUSPICIOUS / HARD NEGATIVE
+
+The conversation contains language that could look suspicious but is actually personal and harmless.
+
+Examples:
+
+* Birthday surprises
+* Personal financial discussions
+* Travel
+* Family matters
+* Personal documents
+* Wedding arrangements
+
+Expected result:
+
+NO ALERT
+
+This category is critical for measuring false positives.
+
+CATEGORY 4 — NORMAL
+
+Completely ordinary communication.
+
+Can be:
+
+* Business
+* Personal
+* Mixed
+
+Expected result:
+
+NO ALERT
+
+14. SEMANTIC VARIATION
+
+Each concept should generate multiple forms:
+
+* Exact keyword
+* Synonym
+* Paraphrase
+* Semantic equivalent
+* Indirect wording
+* Implicit meaning
+* Contextual meaning
+
+This prevents the test dataset from becoming a simple keyword test.
+
+15. DIFFICULTY LEVEL
+
+Support:
+
+Easy
+Medium
+Hard
+Very Hard
+
+Easy:
+Obvious suspicious communication.
+
+Medium:
+Paraphrased concept.
+
+Hard:
+Indirect language.
+
+Very Hard:
+Suspicious intent becomes clear only when the entire conversation is considered.
+
+16. MULTI-MESSAGE CONTEXT
+
+The system should not put the entire suspicious behavior into one message.
+
+Some conversations should develop naturally:
+
+Message 1:
+Normal discussion.
+
+Message 2:
+Subtle request.
+
+Message 3:
+Another employee responds.
+
+Message 4:
+Suspicious intention becomes clearer.
+
+Message 5:
+Employees discuss how to proceed.
+
+This tests contextual detection.
+
+17. ADVERSARIAL GENERATION
+
+Generate challenging examples such as:
+
+* Keyword present but harmless
+* No keyword but suspicious meaning
+* Suspicious wording but personal context
+* Suspicious behavior spread across multiple messages
+* Harmless beginning followed by suspicious content
+* Similar-looking conversations with different outcomes
+
+18. TEMPLATE-AWARE GENERATION
+
+The source template determines:
+
+* Number of participants
+* Message count
+* Reply pattern
+* Thread depth
+* CC behavior
+* Forward behavior
+* Writing style
+* Message length
+* Formatting
+
+The scenario determines:
+
+* What the employees are discussing
+* What behavior they are engaging in
+* Whether it should be alerting
+* Difficulty
+* Semantic variation
+
+Core principle:
+
+TEMPLATE = HOW THE COMMUNICATION LOOKS
+
+SCENARIO = WHAT THE EMPLOYEES ARE DOING
+
+19. RANDOMIZATION
+
+Randomize:
+
+* Synthetic identities
+* Subjects
+* Dates
+* Message wording
+* Conversation length
+* Participant combinations
+* Writing style
+* Explicit vs implicit language
+* Position of suspicious information
+* Reply sequence
+
+Avoid generating hundreds of conversations that look like copies of each other.
+
+20. DISTRIBUTION CONTROL
+
+If the source corpus contains:
+
+60% one-to-one
+25% three-person
+10% four-person
+5% larger groups
+
+the generated dataset should approximately follow the communication structure distribution, with controlled variation.
+
+The user should also be able to override this.
+
+21. GENERATION CONFIGURATION
+
+The UI should allow the user to specify:
+
+Business-sensitive:
+1000
+
+Platform switching:
+1000
+
+Personal suspicious:
+1000
+
+Normal:
+1000
+
+Additional options:
+
+Difficulty
+Semantic variation
+Participant distribution
+Message count
+Conversation length
+Language/style
+Business/personal ratio
+
+22. GENERATION PIPELINE
+
+The actual processing should be:
+
+Input TXT
+|
+v
+RFC 822 Parser
+|
+v
+Inner Email Detector
+|
++–– Inner exists ––> Process inner email
+|
++–– No inner ––––> Process outer email
+|
+v
+Communication Analyzer
+|
+v
+Conversation Structure Profile
+|
+v
+Alert Concept Analyzer
+|
+v
+Scenario Planner
+|
+v
+Synthetic Conversation Generator
+|
+v
+Quality Validator
+|
++–– Failed ––> Regenerate
+|
++–– Passed ––> Continue
+|
+v
+RFC 822 Formatter
+|
+v
+Reconstruct journal structure if required
+|
+v
+Synthetic Dataset
+
+23. QUALITY VALIDATION
+
+Every generated conversation should be validated.
+
+Checks should include:
+
+* Correct category
+* Correct expected alert status
+* Correct number of participants
+* Correct conversation structure
+* Appropriate semantic relationship to alert concept
+* Appropriate difficulty
+* RFC 822 validity
+* No accidental source-content copying
+* No real PII leakage
+* No unintended category crossover
+
+If validation fails:
+
+REJECT → REGENERATE
+
+24. GROUND TRUTH
+
+Every generated email should have separate metadata.
+
+Example:
+
+Conversation ID:
+SYN_000123
+
+Category:
+BUSINESS_SENSITIVE
+
+Concept:
+LEAK_ANNOUNCEMENT
+
+Expected Alert:
+TRUE
+
+Difficulty:
+HARD
+
+Semantic:
+TRUE
+
+Platform Switching:
+FALSE
+
+Participants:
+3
+
+Messages:
+6
+
+The ground truth should NOT be inserted into the email itself.
+
+25. OUTPUT STRUCTURE
+
+Example:
+
+generated_dataset/
+
+business_sensitive/
+    SYN_000001.txt
+    SYN_000002.txt
+platform_switching/
+    SYN_001001.txt
+    SYN_001002.txt
+personal_suspicious/
+    SYN_002001.txt
+    SYN_002002.txt
+normal/
+    SYN_003001.txt
+    SYN_003002.txt
+manifest.json
+
+26. JOURNALED OUTPUT
+
+If the source contains a journal envelope, the output should retain the same overall structure.
+
+Conceptually:
+
+Original:
+
+Outer Journal
+|
++– Original Inner Email
+
+Generated:
+
+Outer Journal
+|
++– New Synthetic Inner Email
+
+The outer journal structure should not be unnecessarily changed.
+
+If there is no inner email:
+
+Original:
+
+Outer Email
+
+Generated:
+
+New Synthetic Outer Email
+
+27. WEB APPLICATION PAGES
+
+DASHBOARD
+
+Shows:
+
+* Number of templates
+* Number of analyzed conversations
+* Number of generated samples
+* Generation history
+* Validation statistics
+
+TEMPLATES
+
+* Upload templates
+* View templates
+* Analyze templates
+* View structure
+* View participant distribution
+
+ANALYSIS
+
+* Corpus statistics
+* Participant statistics
+* Conversation topology
+* Thread distribution
+* Message distribution
+
+ALERT CONCEPTS
+
+* Add concepts
+* Edit concepts
+* Import concept list
+* View semantic expansion
+
+GENERATION
+
+* Select categories
+* Set quantities
+* Select difficulty
+* Select semantic variation
+* Configure structure distribution
+* Start generation
+
+GENERATED DATASET
+
+* Browse generated conversations
+* Preview
+* Filter by category
+* Filter by difficulty
+* Regenerate individual sample
+* Download dataset
+
+EVALUATION
+
+* Upload/run screening results
+* Compare expected vs actual
+* View false positives
+* View false negatives
+* View category-wise performance
+
+28. OPTIONAL SCREENING ENGINE INTEGRATION
+
+The application can eventually connect directly to your existing screening system.
+
+Flow:
+
+Synthetic Dataset
+|
+v
+Screening Engine
+|
+v
+Actual Alerts
+|
+v
+Ground Truth Comparison
+|
+v
+Performance Report
+
+29. METRICS
+
+The evaluation module should calculate:
+
+* True positives
+* True negatives
+* False positives
+* False negatives
+* Precision
+* Recall
+* F1 score
+* False-positive rate
+* False-negative rate
+* Semantic detection rate
+* Exact-keyword detection rate
+* Contextual detection rate
+* Platform-switching detection
+* Category accuracy
+
+30. REGRESSION TESTING
+
+Save generated datasets and screening results by version.
+
+Example:
+
+Screening Engine v1.0:
+Semantic detection = 81%
+
+Screening Engine v1.1:
+Semantic detection = 89%
+
+But:
+
+False positives:
+3% → 6%
+
+This allows the application to determine whether a new screening-engine version actually improved.
+
+31. RECOMMENDED TECHNOLOGY
+
+Backend:
+
+Python + FastAPI
+
+Frontend:
+
+React
+
+Database:
+
+PostgreSQL
+
+File storage:
+
+Local filesystem initially, S3-compatible storage later
+
+RFC 822 processing:
+
+Python email libraries
+
+AI layer:
+
+LLM-based scenario planning, semantic generation and validation
+
+Deterministic Python components should handle:
+
+* RFC 822 parsing
+* Header handling
+* Participant extraction
+* Structure analysis
+* Counts
+* File generation
+* Dataset accounting
+* Validation rules
+
+The LLM should primarily handle:
+
+* Semantic understanding
+* Scenario planning
+* Natural-language generation
+* Contextual validation
+
+32. MOST IMPORTANT DESIGN PRINCIPLE
+
+The system should never simply do:
+
+“Take this email and rewrite it.”
+
+Instead:
+
+REAL EMAIL
+↓
+Understand communication structure
+↓
+Abstract identities/content
+↓
+Create structural profile
+↓
+Choose suspicious scenario
+↓
+Generate completely new communication
+↓
+Validate it
+↓
+Reconstruct RFC 822/journal structure
+
+33. FINAL PRODUCT DEFINITION
+
+The final product is essentially:
+
+A web-based synthetic communication red-team platform that analyzes real RFC 822/journaled communication structures, intelligently generates realistic synthetic employee conversations representing sensitive, suspicious, platform-switching, personal-hard-negative and normal scenarios, preserves the appropriate outer/inner email structure, and produces labeled datasets that can be used to test and measure the effectiveness of an email-screening system.
+
+The most important rule in the entire system is:
+
+INNER EMAIL PRESENT:
+Analyze and generate against the inner email, then preserve the outer journal structure.
+
+INNER EMAIL ABSENT:
+Analyze and generate against the outer email directly.
+
+And the second most important rule is:
+
+THE TEMPLATE DEFINES THE COMMUNICATION STRUCTURE.
+THE SCENARIO DEFINES THE EMPLOYEE BEHAVIOR.
