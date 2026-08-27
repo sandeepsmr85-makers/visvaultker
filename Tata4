@@ -1,0 +1,662 @@
+#!/usr/bin/env python3
+
+import argparse
+import json
+import re
+import unicodedata
+from collections import Counter
+from email import policy
+from email.parser import BytesParser
+from html.parser import HTMLParser
+from pathlib import Path
+
+
+# ============================================================
+# HTML BODY ANALYZER
+# ============================================================
+
+class BodyHTMLAnalyzer(HTMLParser):
+    
+    def __init__(self):
+        super().__init__()
+        self.text_parts = []
+        self.elements = Counter()
+        self.links = []
+        self.images = []
+        self.tables = []
+        
+        self.current_link = None
+        self.in_table = False
+        self.current_table = None
+        self.current_row = None
+        self.current_cell = None
+    
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        attrs_dict = dict(attrs)
+        self.elements[tag] += 1
+        
+        # Links
+        if tag == "a":
+            href = attrs_dict.get("href")
+            self.current_link = {
+                "href": href,
+                "text": "",
+                "title": attrs_dict.get("title")
+            }
+        
+        # Images
+        elif tag == "img":
+            self.images.append({
+                "src": attrs_dict.get("src"),
+                "alt": attrs_dict.get("alt"),
+                "width": attrs_dict.get("width"),
+                "height": attrs_dict.get("height")
+            })
+        
+        # Tables
+        elif tag == "table":
+            self.in_table = True
+            self.current_table = {
+                "rows": [],
+                "max_columns": 0
+            }
+            self.tables.append(self.current_table)
+        
+        elif tag == "tr":
+            if self.in_table:
+                self.current_row = []
+        
+        elif tag in ("td", "th"):
+            if self.in_table:
+                self.current_cell = ""
+    
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        
+        if tag == "a":
+            if self.current_link:
+                self.links.append(self.current_link)
+            self.current_link = None
+        
+        elif tag in ("td", "th"):
+            if self.in_table and self.current_row is not None:
+                self.current_row.append(self.current_cell.strip())
+                self.current_cell = None
+        
+        elif tag == "tr":
+            if self.in_table and self.current_row is not None:
+                self.current_table["rows"].append(self.current_row)
+                self.current_table["max_columns"] = max(
+                    self.current_table["max_columns"],
+                    len(self.current_row)
+                )
+                self.current_row = None
+        
+        elif tag == "table":
+            self.in_table = False
+            self.current_table = None
+    
+    def handle_data(self, data):
+        if not data:
+            return
+        
+        self.text_parts.append(data)
+        
+        if self.current_link is not None:
+            self.current_link["text"] += data
+        
+        if self.current_cell is not None:
+            self.current_cell += data
+
+
+# ============================================================
+# TEXT ANALYSIS
+# ============================================================
+
+def analyze_text(text):
+    characters = len(text)
+    characters_no_spaces = len(re.sub(r"\s", "", text))
+    letters = sum(1 for c in text if c.isalpha())
+    digits = sum(1 for c in text if c.isdigit())
+    numbers = re.findall(r"\b\d+(?:[.,]\d+)*\b", text)
+    whitespace = sum(1 for c in text if c.isspace())
+    punctuation = sum(1 for c in text if unicodedata.category(c).startswith("P"))
+    symbols = sum(1 for c in text if unicodedata.category(c).startswith("S"))
+    unicode_chars = sum(1 for c in text if ord(c) > 127)
+    words = re.findall(r"\b[\wÀ-ÿ]+\b", text, flags=re.UNICODE)
+    lines = text.splitlines()
+    sentences = re.split(r'[.!?]+', text)
+    sentences = [s.strip() for s in sentences if s.strip()]
+    
+    # Word frequency
+    word_freq = Counter(word.lower() for word in words if len(word) > 3)
+    most_common_words = word_freq.most_common(20)
+    
+    # Average word length
+    avg_word_length = sum(len(word) for word in words) / len(words) if words else 0
+    
+    return {
+        "characters": characters,
+        "characters_without_spaces": characters_no_spaces,
+        "words": len(words),
+        "unique_words": len(set(word.lower() for word in words)),
+        "lines": len(lines),
+        "sentences": len(sentences),
+        "letters": letters,
+        "digits": digits,
+        "numbers": len(numbers),
+        "whitespace": whitespace,
+        "punctuation": punctuation,
+        "symbols": symbols,
+        "unicode_characters": unicode_chars,
+        "average_word_length": round(avg_word_length, 2),
+        "most_common_words": most_common_words[:10]
+    }
+
+
+# ============================================================
+# EMAIL / URL / PHONE DETECTION
+# ============================================================
+
+def detect_entities(text):
+    emails = re.findall(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", text)
+    urls = re.findall(r"https?://[^\s<>\"']+|www\.[^\s<>\"']+", text)
+    phones = re.findall(r"(?<!\d)(?:\+?\d[\d\s().-]{7,}\d)(?!\d)", text)
+    dates = re.findall(r"\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b|\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b", text)
+    currencies = re.findall(r"[$€£¥]\s*\d+(?:[.,]\d+)*|\d+(?:[.,]\d+)*\s*[$€£¥]", text)
+    
+    return {
+        "email_addresses": sorted(set(emails)),
+        "urls": sorted(set(urls)),
+        "phone_like_numbers": sorted(set(phones)),
+        "dates": sorted(set(dates)),
+        "currency_amounts": sorted(set(currencies))
+    }
+
+
+# ============================================================
+# EMOJI DETECTION
+# ============================================================
+
+def is_probable_emoji(char):
+    code = ord(char)
+    return (
+        0x1F300 <= code <= 0x1FAFF
+        or 0x2600 <= code <= 0x27BF
+        or 0x2300 <= code <= 0x23FF
+        or 0x2B00 <= code <= 0x2BFF
+        or 0xFE00 <= code <= 0xFE0F
+    )
+
+
+def detect_emojis(text):
+    emojis = []
+    for char in text:
+        if is_probable_emoji(char):
+            emojis.append(char)
+    
+    emoticon_pattern = re.compile(
+        r"(?::|;|=|8|xX)[-^']?[)(DPpOo/\\|*$@]|<3|</3"
+    )
+    emoticons = emoticon_pattern.findall(text)
+    
+    return {
+        "emoji_count": len(emojis),
+        "emojis": sorted(set(emojis)),
+        "ascii_smiley_count": len(emoticons),
+        "ascii_smileys": emoticons
+    }
+
+
+# ============================================================
+# TABLE ANALYSIS
+# ============================================================
+
+def analyze_tables(tables):
+    result = []
+    
+    for index, table in enumerate(tables, start=1):
+        rows = table["rows"]
+        row_count = len(rows)
+        column_count = table["max_columns"]
+        cell_count = sum(len(row) for row in rows)
+        non_empty_cells = sum(1 for row in rows for cell in row if cell.strip())
+        
+        # Check for header row
+        has_header = False
+        if rows:
+            first_row = rows[0]
+            has_header = any(
+                cell.strip() and cell.strip().isupper() 
+                for cell in first_row[:3]
+            )
+        
+        result.append({
+            "table_number": index,
+            "rows": row_count,
+            "columns": column_count,
+            "cells": cell_count,
+            "non_empty_cells": non_empty_cells,
+            "has_header": has_header,
+            "data": rows
+        })
+    
+    return result
+
+
+# ============================================================
+# EXTRACT INNER EMAIL BODY
+# ============================================================
+
+def get_inner_email_body(message):
+    """Extract body from inner email if present"""
+    
+    # Check for message/rfc822 parts (embedded emails)
+    for part in message.walk():
+        if part.get_content_type() == "message/rfc822":
+            try:
+                # Get the inner email message
+                payload = part.get_payload()
+                if isinstance(payload, list) and payload:
+                    inner_msg = payload[0]
+                else:
+                    inner_msg = payload
+                
+                # Parse the inner email
+                if hasattr(inner_msg, 'walk'):
+                    return extract_body_from_message(inner_msg), True
+            
+            except Exception:
+                pass
+    
+    # Check for forwarded email in text
+    if message.is_multipart():
+        for part in message.walk():
+            if part.get_content_type() == "text/plain":
+                try:
+                    content = part.get_content()
+                    if content and "forwarded message" in content.lower():
+                        # Try to extract forwarded email content
+                        forwarded_content = extract_forwarded_content(content)
+                        if forwarded_content:
+                            return forwarded_content, True
+                except:
+                    pass
+    
+    return None, False
+
+
+def extract_forwarded_content(text):
+    """Extract content from forwarded email text"""
+    
+    # Look for common forwarded email markers
+    markers = [
+        "Begin forwarded message:",
+        "Forwarded message:",
+        "---------- Forwarded message ----------",
+        "-----Original Message-----"
+    ]
+    
+    for marker in markers:
+        if marker in text:
+            # Extract content after the marker
+            parts = text.split(marker, 1)
+            if len(parts) > 1:
+                return parts[1].strip()
+    
+    return None
+
+
+def extract_body_from_message(message):
+    """Extract body content from an email message"""
+    
+    plain_parts = []
+    html_parts = []
+    
+    for part in message.walk():
+        content_type = part.get_content_type()
+        
+        if content_type == "text/plain":
+            try:
+                content = part.get_content()
+                if content:
+                    plain_parts.append(content)
+            except:
+                pass
+        
+        elif content_type == "text/html":
+            try:
+                content = part.get_content()
+                if content:
+                    html_parts.append(content)
+            except:
+                pass
+    
+    plain_text = "\n".join(plain_parts)
+    html_text = "\n".join(html_parts)
+    
+    # Prefer plain text for forwarded emails (usually cleaner)
+    if plain_text.strip():
+        return plain_text
+    elif html_text.strip():
+        # Extract text from HTML
+        html_analyzer = BodyHTMLAnalyzer()
+        html_analyzer.feed(html_text)
+        return " ".join(html_analyzer.text_parts)
+    
+    return ""
+
+
+# ============================================================
+# ANALYZE EML BODY
+# ============================================================
+
+def analyze_eml_body(filename):
+    """Analyze email body, focusing on inner email if present"""
+    
+    with open(filename, "rb") as f:
+        message = BytesParser(policy=policy.default).parse(f)
+    
+    # First, try to get inner email body
+    inner_body, has_inner = get_inner_email_body(message)
+    
+    if has_inner and inner_body:
+        body_text = inner_body
+        body_source = "inner_email"
+    else:
+        # Extract outer email body
+        plain_parts = []
+        html_parts = []
+        
+        for part in message.walk():
+            content_type = part.get_content_type()
+            
+            if content_type == "text/plain":
+                try:
+                    content = part.get_content()
+                    if content:
+                        plain_parts.append(content)
+                except:
+                    pass
+            
+            elif content_type == "text/html":
+                try:
+                    content = part.get_content()
+                    if content:
+                        html_parts.append(content)
+                except:
+                    pass
+        
+        plain_text = "\n".join(plain_parts)
+        html_text = "\n".join(html_parts)
+        
+        # Parse HTML if present
+        html_analyzer = BodyHTMLAnalyzer()
+        if html_text:
+            html_analyzer.feed(html_text)
+        
+        visible_html_text = " ".join(html_analyzer.text_parts)
+        
+        # Prefer HTML visible text when available
+        if visible_html_text.strip():
+            body_text = visible_html_text
+        else:
+            body_text = plain_text
+        
+        body_source = "outer_email"
+    
+    # Analyze the body
+    text_stats = analyze_text(body_text)
+    entities = detect_entities(body_text)
+    emoji_stats = detect_emojis(body_text)
+    
+    # Parse HTML for structure analysis
+    html_analyzer = BodyHTMLAnalyzer()
+    
+    # Re-extract HTML content for structure analysis
+    html_parts = []
+    for part in message.walk():
+        if part.get_content_type() == "text/html":
+            try:
+                content = part.get_content()
+                if content:
+                    html_parts.append(content)
+            except:
+                pass
+    
+    html_text = "\n".join(html_parts)
+    if html_text:
+        html_analyzer.feed(html_text)
+    
+    tables = analyze_tables(html_analyzer.tables)
+    
+    # Build result
+    result = {
+        "body_source": body_source,
+        "has_inner_email": has_inner,
+        "body_text": body_text,
+        "text_preview": body_text[:500],
+        "text_statistics": text_stats,
+        "html_structure": {
+            "paragraphs": html_analyzer.elements["p"],
+            "headings": {
+                f"h{i}": html_analyzer.elements[f"h{i}"] 
+                for i in range(1, 7)
+            },
+            "bold": html_analyzer.elements["b"] + html_analyzer.elements["strong"],
+            "italic": html_analyzer.elements["i"] + html_analyzer.elements["em"],
+            "underline": html_analyzer.elements["u"],
+            "lists": {
+                "unordered": html_analyzer.elements["ul"],
+                "ordered": html_analyzer.elements["ol"],
+                "list_items": html_analyzer.elements["li"]
+            },
+            "links": len(html_analyzer.links),
+            "images": len(html_analyzer.images),
+            "tables": len(tables),
+            "divs": html_analyzer.elements["div"],
+            "spans": html_analyzer.elements["span"]
+        },
+        "tables": tables,
+        "links": html_analyzer.links[:50],
+        "total_links": len(html_analyzer.links),
+        "images": html_analyzer.images[:20],
+        "total_images": len(html_analyzer.images),
+        "emojis": emoji_stats,
+        "detected_entities": entities
+    }
+    
+    return result
+
+
+# ============================================================
+# CLI
+# ============================================================
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Email Body Analyzer (focuses on inner emails when present)"
+    )
+    
+    parser.add_argument("eml", help="Path to EML file")
+    parser.add_argument("--json", action="store_true", help="Output JSON")
+    parser.add_argument("--full-text", action="store_true", help="Include full body text")
+    parser.add_argument("--verbose", action="store_true", help="Show detailed information")
+    
+    args = parser.parse_args()
+    
+    result = analyze_eml_body(args.eml)
+    
+    if args.json:
+        # Remove full text if not requested
+        if not args.full_text and "body_text" in result:
+            result["body_text"] = result["text_preview"]
+        
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        print_report(result, args.verbose)
+
+
+# ============================================================
+# HUMAN READABLE REPORT
+# ============================================================
+
+def print_report(r, verbose=False):
+    print("\n" + "=" * 70)
+    print("           EMAIL BODY ANALYSIS REPORT")
+    print("=" * 70)
+    
+    print(f"\nBODY SOURCE: {r['body_source'].upper().replace('_', ' ')}")
+    if r['has_inner_email']:
+        print("(Inner email was found and analyzed)")
+    
+    # Text Preview
+    print("\nBODY PREVIEW")
+    print("-" * 40)
+    print(r["text_preview"][:300])
+    if len(r.get("body_text", "")) > 300:
+        print("...")
+    
+    # Text Statistics
+    stats = r["text_statistics"]
+    print("\nTEXT STATISTICS")
+    print("-" * 40)
+    
+    # Format statistics in columns
+    stat_items = [
+        ("Characters", stats["characters"]),
+        ("Characters (no spaces)", stats["characters_without_spaces"]),
+        ("Words", stats["words"]),
+        ("Unique Words", stats["unique_words"]),
+        ("Lines", stats["lines"]),
+        ("Sentences", stats["sentences"]),
+        ("Letters", stats["letters"]),
+        ("Digits", stats["digits"]),
+        ("Numbers", stats["numbers"]),
+        ("Whitespace", stats["whitespace"]),
+        ("Punctuation", stats["punctuation"]),
+        ("Symbols", stats["symbols"]),
+        ("Unicode Characters", stats["unicode_characters"]),
+        ("Average Word Length", stats["average_word_length"])
+    ]
+    
+    for label, value in stat_items:
+        print(f"  {label:25}: {value}")
+    
+    # Most Common Words
+    if stats.get("most_common_words"):
+        print("\nMOST COMMON WORDS")
+        print("-" * 40)
+        for word, count in stats["most_common_words"]:
+            print(f"  {word:20}: {count}")
+    
+    # HTML Structure
+    structure = r["html_structure"]
+    print("\nHTML STRUCTURE")
+    print("-" * 40)
+    
+    structure_items = [
+        ("Paragraphs", structure["paragraphs"]),
+        ("Bold Text", structure["bold"]),
+        ("Italic Text", structure["italic"]),
+        ("Underlined Text", structure["underline"]),
+        ("Links", structure["links"]),
+        ("Images", structure["images"]),
+        ("Tables", structure["tables"]),
+        ("Divs", structure["divs"]),
+        ("Spans", structure["spans"])
+    ]
+    
+    for label, value in structure_items:
+        print(f"  {label:25}: {value}")
+    
+    # Headings
+    print("\n  Headings:")
+    for h, count in structure["headings"].items():
+        if count > 0:
+            print(f"    {h.upper():5}: {count}")
+    
+    # Lists
+    print("\n  Lists:")
+    print(f"    Unordered: {structure['lists']['unordered']}")
+    print(f"    Ordered  : {structure['lists']['ordered']}")
+    print(f"    Items    : {structure['lists']['list_items']}")
+    
+    # Tables
+    if r["tables"]:
+        print("\nTABLES")
+        print("-" * 40)
+        for table in r["tables"]:
+            print(f"\n  Table {table['table_number']}:")
+            print(f"    Size: {table['rows']} rows × {table['columns']} columns")
+            print(f"    Total Cells: {table['cells']}")
+            print(f"    Non-empty Cells: {table['non_empty_cells']}")
+            print(f"    Has Header: {'YES' if table['has_header'] else 'NO'}")
+            
+            if verbose:
+                print("    Data:")
+                for row in table["data"][:5]:
+                    print(f"      {' | '.join(str(cell)[:20] for cell in row)}")
+                if table["rows"] > 5:
+                    print(f"      ... ({table['rows'] - 5} more rows)")
+    else:
+        print("\nTABLES: None found")
+    
+    # Links
+    if r["links"]:
+        print(f"\nLINKS ({r['total_links']} total)")
+        print("-" * 40)
+        if verbose:
+            for link in r["links"][:10]:
+                text = link.get("text", "")[:30]
+                href = link.get("href", "")
+                print(f"  {text:30} -> {href}")
+            if r["total_links"] > 10:
+                print(f"  ... ({r['total_links'] - 10} more links)")
+    
+    # Images
+    if r["images"]:
+        print(f"\nIMAGES ({r['total_images']} total)")
+        print("-" * 40)
+        if verbose:
+            for img in r["images"][:10]:
+                src = img.get("src", "N/A")
+                alt = img.get("alt", "")
+                print(f"  {alt[:30]:30} -> {src}")
+    
+    # Emojis
+    emoji = r["emojis"]
+    print("\nEMOJIS & SMILEYS")
+    print("-" * 40)
+    print(f"  Emoji Count: {emoji['emoji_count']}")
+    print(f"  ASCII Smileys: {emoji['ascii_smiley_count']}")
+    if emoji["emojis"] and verbose:
+        print(f"  Emojis: {' '.join(emoji['emojis'][:20])}")
+    
+    # Detected Entities
+    entities = r["detected_entities"]
+    print("\nDETECTED ENTITIES")
+    print("-" * 40)
+    
+    entity_items = [
+        ("Email Addresses", entities["email_addresses"]),
+        ("URLs", entities["urls"]),
+        ("Phone Numbers", entities["phone_like_numbers"]),
+        ("Dates", entities["dates"]),
+        ("Currency Amounts", entities["currency_amounts"])
+    ]
+    
+    for label, values in entity_items:
+        print(f"\n  {label}: {len(values)}")
+        if values and verbose:
+            for value in values[:5]:
+                print(f"    - {value}")
+            if len(values) > 5:
+                print(f"    ... ({len(values) - 5} more)")
+    
+    print("\n" + "=" * 70)
+
+
+if __name__ == "__main__":
+    main()
